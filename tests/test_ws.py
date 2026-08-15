@@ -1,10 +1,10 @@
 import asyncio
-from .config import SnapshotUniversalConfig
-from .ws_client import DeribitWSClient
+from deribit.config import SnapshotUniversalConfig
+from deribit.ws_client import DeribitWSClient
 
 async def main():
-    client = DeribitWSClient(testnet=True)
-    config = SnapshotUniversalConfig(currency="ETH")
+    client = DeribitWSClient(testnet=False)
+    config = SnapshotUniversalConfig(currency="BTC")
 
     print(f"Connecting to Deribit WebSocket for {config.currency}...")
 

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Dict
 
-@dataclass
+@dataclass(frozen=True)
 class SnapshotUniversalConfig:
     currency: str = 'BTC'
     include_options: bool = True

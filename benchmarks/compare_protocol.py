@@ -1,8 +1,8 @@
 import asyncio
 import time
 import httpx
-from .config import SnapshotUniversalConfig
-from .ws_client import DeribitWSClient
+from deribit.config import SnapshotUniversalConfig
+from deribit.ws_client import DeribitWSClient
 
 REST_URL = "https://test.deribit.com/api/v2"
 
