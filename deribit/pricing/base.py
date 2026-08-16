@@ -4,6 +4,9 @@ from typing import Literal
 
 CallPut = Literal["call", "put"]
 
+def parse_cp(cp: CallPut) -> int:
+    return 1 if cp.lower() in ("call", "c") else -1
+
 @dataclass(frozen=True)
 class Greeks:
     delta: float
