@@ -39,9 +39,12 @@ class SnapshotStore:
                     currency TEXT NOT NULL,
                     kind TEXT NOT NULL,
                     settlement_currency TEXT NOT NULL,
-                    expiration_timestamp INTEGER,
+                    expiration_timestamp INTEGER NOT NULL,
+                    strike REAL,
+                    option_type TEXT,
                     tick_size REAL NOT NULL,
                     contract_size REAL NOT NULL,
+                    min_trade_amount REAL NOT NULL,
                     maker_commission REAL,
                     taker_commission REAL
                 )
@@ -79,10 +82,19 @@ class SnapshotStore:
                 cursor.execute(
                     """
                     INSERT OR REPLACE INTO instrument_specs (
-                        instrument_name, currency, kind, settlement_currency,
-                        expiration_timestamp, tick_size, contract_size,
-                        maker_commission, taker_commission
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        instrument_name, 
+                        currency,
+                        kind,
+                        settlement_currency,
+                        expiration_timestamp,
+                        strike,
+                        option_type,
+                        tick_size,
+                        contract_size,
+                        min_trade_amount,
+                        maker_commission,
+                        taker_commission
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         inst.get("instrument_name"),
@@ -90,8 +102,11 @@ class SnapshotStore:
                         inst.get("kind"),
                         inst.get("settlement_currency"),
                         inst.get("expiration_timestamp"),
+                        inst.get("strike"),
+                        inst.get("option_type"),
                         inst.get("tick_size"),
                         inst.get("contract_size"),
+                        inst.get("min_trade_amount"),
                         inst.get("maker_commission"),
                         inst.get("taker_commission"),
                     ),

@@ -1,26 +1,26 @@
-import asyncio
+import pytest
 from deribit.config import SnapshotUniversalConfig
 from deribit.ws_client import DeribitWSClient
 
-async def main():
+
+@pytest.mark.asyncio
+async def test_deribit_websocket_snapshot():
+    """Verifies Deribit WebSocket transport, payload structure, and server timestamp skew."""
     client = DeribitWSClient(testnet=False)
     config = SnapshotUniversalConfig(currency="BTC")
 
-    print(f"Connecting to Deribit WebSocket for {config.currency}...")
-
     data = await client.fetch_snapshot_data(config)
-    print(f"\n--- Captured WebSocket Snapshot ({config.currency}) ---")
-    print(f"Index Price: ${data['index']['payload']['index_price']:,.2f}")
-    print(f"Options Discovered: {len(data['instruments']['payload'])}")
-    print(f"Option Summaries: {len(data['options']['payload'])}")
-    print(f"Futures Summaries: {len(data['futures']['payload'])}")
-    
-    # Calculate exchange-side timestamp spread (skew) across the 4 responses
+
+    assert "index" in data
+    assert "instruments" in data
+    assert "options" in data
+    assert "futures" in data
+
+    assert data["index"]["payload"]["index_price"] > 0.0
+    assert len(data["instruments"]["payload"]) > 0
+    assert len(data["options"]["payload"]) > 0
+
     us_out_stamps = [resp["usOut"] for resp in data.values() if resp.get("usOut")]
     if us_out_stamps:
         skew_ms = (max(us_out_stamps) - min(us_out_stamps)) / 1000.0
-        print(f"Exchange Server Timestamp Skew: {skew_ms:.2f} ms")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        assert skew_ms < 100.0, f"Exchange server skew too high: {skew_ms:.2f} ms"
