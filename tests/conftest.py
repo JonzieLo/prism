@@ -1,8 +1,11 @@
 import pytest
 
-from deribit.pricing.bachelier import BachelierModel
-from deribit.pricing.binomial import BinomialModel
-from deribit.pricing.black_scholes import Black76Model, BlackScholesModel
+from deribit.pricing import (
+    BachelierModel,
+    BinomialModel,
+    Black76Model,
+    BlackScholesModel,
+)
 
 REL_STEP_1ST = 6e-6   # h ~ x * eps^(1/3) for 1st derivatives
 REL_STEP_2ND = 1.2e-4 # h ~ x * eps^(1/4) for 2nd derivatives
