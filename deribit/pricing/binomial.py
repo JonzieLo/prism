@@ -14,9 +14,7 @@ INTRINSIC_ULP_TOL = 8.0
 
 class BinomialModel(OptionModel):
     """
-    Cox-Ross-Rubinstein binomial model for American options on Spot price.
-
-    u = exp(vol * sqrt(dt)),  d = 1/u,  p = (exp(r*dt) - d) / (u - d)
+    Cox-Ross-Rubinstein binomial model for European options.
     """
 
     def __init__(self, steps: int = 200):
