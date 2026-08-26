@@ -124,13 +124,13 @@ Every reported Greek therefore states its value currency, bumped variable, and h
 
 ### Doubling and Halving
 
-If $(K)$ is the initial reference level:
+If $K$ is the initial reference level:
 
 | Delivery price | Call BTC payoff | Call USD payoff | Put BTC payoff | Put USD payoff |
 | :--- | ---: | ---: | ---: | ---: |
-| $D=\frac{K}{2}$ | \(0\) | \(0\) | \(1\) BTC | $\frac{K}{2}$ |
-| $D=K$ | \(0\) | \(0\) | \(0\) | \(0\) |
-| $D=2K$ | $(\frac{1}{2})$ BTC | \(K\) | \(0\) | \(0\) |
+| $D=\frac{K}{2}$ | $0$ | $0$ | $1$ BTC | $\frac{K}{2}$ |
+| $D=K$ | $0$ | $0$ | $0$ | $0$ |
+| $D=2K$ | $\frac{1}{2}$ BTC | $K$ | $0$ | $0$ |
 
 As $D \to \infty$, the inverse call approaches one BTC while its USD payoff remains unbounded. As $D \to 0$, the inverse put requires an unbounded number of increasingly cheap BTC while its USD payoff approaches the finite strike.
 
@@ -176,7 +176,7 @@ $$\rho_{\text{BS}} = +K \tau e^{-r\tau} \Phi(d_2) \quad \text{vs.} \quad \rho_{7
 
 ### Bachelier Normal Model
 
-Bachelier assumes **normally distributed** forward-price changes. Its volatility $\sigma_N$ is measured in price units per square-root year.
+Bachelier assumes **normally distributed** forward-price changes. Its volatility $\sigma_N$ is measured in price units per square-root year. In this section, $df=e^{-r\tau}$.
 
 $$
 d=\frac{F-K}{\sigma_N\sqrt{\tau}}.
@@ -344,7 +344,7 @@ $$
 \qquad
 \rho_{\mathrm{coin}}=\frac{\rho_F}{X},
 \qquad
-\mathrm{Vomma}_{\mathrm{coin}}=\frac{\nu_F}{X}.
+\nu_{\mathrm{coin}}=\frac{\nu_F}{X}.
 $$
 
 Because Vanna also differentiates with respect to spot:
@@ -366,20 +366,18 @@ The upper panel shows model deltas. They generally decrease from one toward zero
 
 The lower panel shows inverse NTD. Its hump shape may be interpreted as:
 
-* deep ITM: the coin call premium approaches its 1-BTC ceiling, reducing incremental coin exposure;
-* around the active exercise region: both exercise probability and price sensitivity matter;
-* deep OTM: exercise probability approaches zero.
+* **Deep ITM:** the coin call premium approaches its 1-BTC ceiling, reducing incremental coin exposure;
+* **Moderately ITM / near ATM:** NTD is highest - Both exercise probability and price sensitivity matter;
+* **Deep OTM:** Both option value and sensitivity approach zero, so NTD falls toward zero.
 
 ## Implied Volatility Engine
 
-Implied volatility ($\sigma$) is solved using a two-stage root finder:
+* **Black-Scholes:** Newton iterations followed by Brent on the fixed bracket $[10^{-6},5]$ if Newton does not return.
+* **Black-76:** The same Newton-then-Brent structure. Its current exception branch returns `0.0` if Brent fails; this is a known limitation and must not be interpreted as a valid zero-volatility solution.
+* **Bachelier:** A scale-aware normal-volatility bracket, an ATM-derived Newton seed, and Brent fallback after bracket expansion.
+* **CRR binomial:** Brent-only inversion on an explicitly expanded bracket; it does not run Newton first.
 
-1. **Newton-Raphson (Primary):**
-   $$\sigma_{n+1} = \sigma_n - \frac{V(\sigma_n) - P_{\text{market}}}{\mathcal{V}(\sigma_n)}$$
-   Converges in 3–4 iterations for near-the-money quotes.
-2. **Brent's Method Fallback:**
-   For deep OTM options, analytical Vega ($\mathcal{V}$) approaches zero, causing Newton-Raphson to diverge or divide by zero. If Vega falls below $10^{-12}$, the solver falls back to `scipy.optimize.brentq` over $[10^{-6}, 5.0]$ to guarantee $10^{-10}$ convergence.
-
+Newton steps are evaluated in volatility units through price error divided by vega. Brent solves the price residual on a bracket and follows its own numerical stopping rules. Tests therefore check recovered volatility and, where implemented, repricing error rather than claiming one universal solver tolerance.
 ### Volatility Space Stopping Rule
 
 Stopping rules evaluated in dollar space ($|P_{\text{calc}} - P_{\text{market}}| < 10^{-10}$) break down on deep OTM options where Vega is tiny ($\sim 10^{-4}$), leaving errors as large as $10^{-6}$ in volatility space. PRISM enforces convergence directly in **volatility space**:
@@ -390,7 +388,7 @@ $$\left| \frac{P_{\text{calc}} - P_{\text{market}}}{\mathcal{V}} \right| < 10^{-
 
 ## Unit Testing & Verification
 
-The pricing test suite (`tests/test_pricing.py`) runs 57 automated assertions covering IV inversion, Put-Call Parity, boundary conditions, and analytical Greeks verified against central finite differences.
+Current unit testing covers automated assertions covering IV inversion, Put-Call Parity, boundary conditions, and analytical Greeks verified against central finite differences.
 
 ### Relative Finite-Difference Step Scaling ($h$)
 
@@ -398,14 +396,14 @@ Using a fixed absolute bump size (e.g., $h = 10^{-4}$) at $S = \$65,000$ falls b
 
 Central difference step sizes scale relative to the variable magnitude ($x$) based on float64 machine epsilon ($\epsilon \approx 2.22 \times 10^{-16}$):
 
-* **1st Derivatives ($\Delta, \mathcal{V}, \Theta, \rho, \text{Vanna}, \text{Vomma}$):** $h = x \cdot \epsilon^{1/3} \approx x \cdot (6 \times 10^{-6})$
-* **2nd Derivatives ($\Gamma$):** $h = x \cdot \epsilon^{1/4} \approx x \cdot (1.2 \times 10^{-4})$
+* **Central first derivatives:** $h \sim x\epsilon^{1/3}$.
+* **Direct second derivatives:** $h \sim x\epsilon^{1/4}$.
 
-At $S = \$65,000$, Gamma is tested using $h \approx \$7.80$, guaranteeing numerical stability.
+Vomma is validated as a central first derivative of vega in the analytic-model tests, while binomial vomma is calculated directly as a second difference of tree prices.
 
 ### Test Coverage Summary
 
-* **$10^{-10}$ IV Roundtrips:** Verifies $P \to \sigma \to P$ recovery across strikes ($\$50\text{k}, \$65\text{k}, \$80\text{k}$) and volatilities ($20\%, 55\%, 120\%$) for both Spot and Forward models.
-* **Put-Call Parity:** Asserts $C - P = S - K e^{-r\tau}$ (BS) and $C - P = e^{-r\tau}(F - K)$ (B76) to $10^{-8}$ precision.
-* **Finite-Difference Convergence:** Analytical Greeks match central differences within relative tolerances ($10^{-8}$ for Delta/Vega, $10^{-6}$ for Gamma/Vanna/Vomma).
-* **Arbitrage Bounds:** Sub-intrinsic and above-ceiling prices explicitly raise `ValueError` to prevent surface fitting corruption.
+* **IV round trips:** Exercises Black-Scholes, Black-76, Bachelier, and CRR over multiple strikes and volatility regimes with model-specific tolerances.
+* **Put-call parity:** Tests $C-P=S-Ke^{-r\tau}$ for Black-Scholes and $C-P=e^{-r\tau}(F-K)$ for forward models.
+* **Greek checks:** Analytic Greeks are compared with finite differences; CRR Greeks are checked against Black-76 and independent tree differences.
+* **Bounds:** Tests reject sub-intrinsic quotes across the model suite. CRR has a dedicated ceiling test. Black-Scholes and Black-76 implement ceiling guards but do not yet have dedicated above-ceiling tests. Bachelier has no finite lognormal-style ceiling.
