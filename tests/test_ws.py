@@ -2,7 +2,7 @@ import pytest
 from deribit.config import SnapshotUniversalConfig
 from deribit.ws_client import DeribitWSClient
 
-
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_deribit_websocket_snapshot():
     """Verifies Deribit WebSocket transport, payload structure, and server timestamp skew."""

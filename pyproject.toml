@@ -4,13 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "prism"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
+    "numpy",
     "scipy",
     "pytest",
     "pytest-asyncio",
     "websockets",
-    "python-dotenv"
+    "python-dotenv",
+    "matplotlib",
+    "httpx"
 ]
 
 [tool.setuptools.packages.find]
@@ -18,3 +21,7 @@ where = ["."]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: tests that call external Deribit services"
+]

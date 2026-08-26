@@ -123,3 +123,19 @@ class SnapshotStore:
             if row:
                 return json.loads(row[0])
             return None
+        
+    def latest_snapshot_id(self, currency: str = "BTC") -> Optional[int]:
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT snapshot_id
+                FROM snapshot_meta
+                WHERE currency = ?
+                ORDER BY snapshot_id DESC
+                LIMIT 1
+                """,
+                (currency.upper(),),
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
