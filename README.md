@@ -155,11 +155,11 @@ While Black-Scholes and Black-76 yield identical option prices when $F = S e^{r\
 * Bumping Spot $S$ implicitly moves Forward $F$ via cost-of-carry ($F = S e^{r\tau}$).
 * Chain Rule ($\frac{\partial F}{\partial S} = e^{r\tau}$) links Spot and Forward sensitivities:
 
-$$\Delta_{\text{BS}} = \frac{\partial V}{\partial S} = \frac{\partial V}{\partial F} \cdot \frac{\partial F}{\partial S} = e^{r\tau} \Delta_{76} = \Phi(d_1) \quad (\text{Call})$$
+$$\Delta_{\text{BS}} = \frac{\partial V}{\partial S} = \frac{\partial V}{\partial F} \cdot \frac{\partial F}{\partial S} = e^{r\tau} \quad \text{vs.} \quad \Delta_{76} = \Phi(d_1) \quad (\text{Call})$$
 
-$$\Gamma_{\text{BS}} = \frac{\partial^2 V}{\partial S^2} = e^{2r\tau} \Gamma_{76} = \frac{\phi(d_1)}{S \sigma \sqrt{\tau}}$$
+$$\Gamma_{\text{BS}} = \frac{\partial^2 V}{\partial S^2} = e^{2r\tau} \quad \text{vs.} \quad \Gamma_{76} = \frac{\phi(d_1)}{S \sigma \sqrt{\tau}}$$
 
-$$\text{Rho}_{\text{BS}} = +K \tau e^{-r\tau} \Phi(d_2) \quad \text{vs.} \quad \text{Rho}_{76} = -\tau \cdot \text{CallPrice}_{76}$$
+$$\Rho_{\text{BS}} = +K \tau e^{-r\tau} \Phi(d_2) \quad \text{vs.} \quad \Rho_{76} = -\tau \cdot \text{CallPrice}_{76}$$
 
 *Note:* A Black-Scholes call is **long rates** (higher rates increase forward drift, raising call value), whereas a Black-76 call is **short rates** (higher rates increase the discount factor $e^{-r\tau}$ on a fixed forward).
 
@@ -173,6 +173,198 @@ $$\text{Rho}_{\text{BS}} = +K \tau e^{-r\tau} \Phi(d_2) \quad \text{vs.} \quad \
 | **Gamma ($\Gamma$)** | $\frac{\phi(d_1)}{S \sigma \sqrt{\tau}}$ | $\frac{e^{-r\tau} \phi(d_1)}{F \sigma \sqrt{\tau}}$ |
 | **Vega ($\mathcal{V}$)** | $S \phi(d_1) \sqrt{\tau}$ | $F e^{-r\tau} \phi(d_1) \sqrt{\tau}$ |
 | **Call Rho ($\rho$)** | $+K \tau e^{-r\tau} \Phi(d_2)$ | $-\tau \cdot \text{CallPrice}_{76}$ |
+
+### Bachelier Normal Model
+
+Bachelier assumes **normally distributed** forward-price changes. Its volatility $\sigma_N$ is measured in price units per square-root year.
+
+$$
+d=\frac{F-K}{\sigma_N\sqrt{\tau}}.
+$$
+
+The call and put prices are:
+
+$$
+C=df\left[(F-K)\Phi(d)+\sigma_N\sqrt{\tau}\phi(d)\right],
+$$
+
+$$
+P=df\left[(K-F)\Phi(-d)+\sigma_N\sqrt{\tau}\phi(d)\right].
+$$
+
+The analytic forward Greeks used by PRISM are:
+
+| Greek | Call | Put |
+| :--- | :--- | :--- |
+| **Delta** | $df\Phi(d)$ | $$-df\Phi(-d)$ |
+| **Gamma** | $\frac{df\phi(d)}{\sigma_N\sqrt{\tau}}$ | Same |
+| **Vega** | $df\sqrt{\tau}\phi(d)$ | Same |
+| **Theta** | $rV-\frac{df\sigma_N\phi(d)}{2\sqrt{\tau}}$ | Same form using put value $V$ |
+| **Rho** | $-\tau V$ | $-\tau V$ |
+| **Vanna** | $-\frac{df\,d\phi(d)}{\sigma_N}$ | Same |
+| **Vomma** | $\frac{df\sqrt{\tau}\,d^2\phi(d)}{\sigma_N}$ | Same |
+
+Bachelier vega is sensitivity to a one-unit change in normal volatility, not a one-percentage-point change in lognormal volatility. This is why Deribit's lognormal mark IV cannot be passed directly into the Bachelier model.
+
+### CRR Binomial Forward Tree
+
+The binomial model does not start with a closed-form price. It divides the time to expiry into $N$ steps:
+
+$$
+\Delta t=\frac{\tau}{N},
+\qquad
+u=e^{\sigma\sqrt{\Delta t}},
+\qquad
+d=\frac{1}{u},
+\qquad
+p=\frac{1-d}{u-d}=\frac{1}{1+u}.
+$$
+
+The terminal forward nodes and USD payoffs are:
+
+$$
+F_{N,j}=F u^{N-j}d^j,
+$$
+
+$$
+V_{N,j}=\max\left(s(F_{N,j}-K),0\right),
+\qquad
+s=
+\begin{cases}
++1 & \text{call}\\
+-1 & \text{put}.
+\end{cases}
+$$
+
+European backward induction is:
+
+$$
+V_{n,j}=e^{-r\Delta t}
+\left[pV_{n+1,j}+(1-p)V_{n+1,j+1}\right].
+$$
+
+There is no early-exercise comparison. Let $V_0$ be the root, $(V_u,V_d)$ the step-1 values, and $(V_{uu},V_{ud},V_{dd})$ the step-2 values. PRISM calculates:
+
+$$
+\Delta
+=\frac{V_u-V_d}{F(u-d)},
+$$
+
+$$
+\Delta_u
+=\frac{V_{uu}-V_{ud}}{Fu(u-d)},
+\qquad
+\Delta_d
+=\frac{V_{ud}-V_{dd}}{Fd(u-d)},
+$$
+
+$$
+\Gamma
+=\frac{\Delta_u-\Delta_d}
+{\frac12F(u^2-d^2)},
+$$
+
+$$
+\Theta
+=\frac{V_{ud}-V_0}{2\Delta t},
+\qquad
+\rho=-\tau V_0.
+$$
+
+Delta, gamma, and theta are lattice estimates over finite node spacing. Vega, vanna, and vomma require additional volatility-shifted trees:
+
+$$
+\nu
+\approx
+\frac{V(\sigma+h_1)-V(\sigma-h_1)}{2h_1},
+$$
+
+$$
+\mathrm{Vanna}
+=
+\frac{\partial\Delta}{\partial\sigma}
+\approx
+\frac{\Delta(\sigma+h_1)-\Delta(\sigma-h_1)}{2h_1},
+$$
+
+$$
+\mathrm{Vomma}
+=
+\frac{\partial\nu}{\partial\sigma}
+\approx
+\frac{V(\sigma+h_2)-2V(\sigma)+V(\sigma-h_2)}{h_2^2},
+$$
+
+with:
+
+$$
+h_1=\sigma\epsilon^{1/3},
+\qquad
+h_2=\sigma\epsilon^{1/4},
+$$
+
+where $\epsilon$ is float64 machine precision. These finite-tree Greeks can oscillate as nodes move across the strike, even while the price converges toward Black-76.
+
+### Inverse Coin Conversion
+
+The inverse layer converts a cash-valued forward model rather than introducing new price dynamics. Let $V$ be the USD value, $X$ the current index, $F$ the expiry forward, and:
+
+$$
+a=\frac{F}{X}.
+$$
+
+The spot-equivalent cash Greeks are:
+
+$$
+\Delta_S=a\Delta_F,
+\qquad
+\Gamma_S=a^2\Gamma_F.
+$$
+
+The coin value and primary coin sensitivities are:
+
+$$
+c=\frac{V}{X},
+$$
+
+$$
+\Delta_{\mathrm{coin}}
+=\frac{X\Delta_S-V}{X^2},
+$$
+
+$$
+\mathrm{NTD}
+=X\Delta_{\mathrm{coin}}
+=\Delta_S-c,
+$$
+
+$$
+\Gamma_{\mathrm{coin}}
+=\frac{\Gamma_S}{X}
+-\frac{2\Delta_S}{X^2}
++\frac{2V}{X^3}.
+$$
+
+When $X$ is held fixed for a non-spot bump:
+
+$$
+\nu_{\mathrm{coin}}=\frac{\nu_F}{X},
+\qquad
+\Theta_{\mathrm{coin}}=\frac{\Theta_F}{X},
+\qquad
+\rho_{\mathrm{coin}}=\frac{\rho_F}{X},
+\qquad
+\mathrm{Vomma}_{\mathrm{coin}}=\frac{\nu_F}{X}.
+$$
+
+Because Vanna also differentiates with respect to spot:
+
+$$
+\mathrm{Vanna}_{\mathrm{coin}}
+=\frac{a\,\mathrm{Vanna}_F}{X}
+-\frac{\mathrm{Vega}_F}{X^2}.
+$$
+
 
 ### Delta-vs-Strike Figure
 
