@@ -159,7 +159,7 @@ $$\Delta_{\text{BS}} = \frac{\partial V}{\partial S} = \frac{\partial V}{\partia
 
 $$\Gamma_{\text{BS}} = \frac{\partial^2 V}{\partial S^2} = e^{2r\tau} \quad \text{vs.} \quad \Gamma_{76} = \frac{\phi(d_1)}{S \sigma \sqrt{\tau}}$$
 
-$$\Rho_{\text{BS}} = +K \tau e^{-r\tau} \Phi(d_2) \quad \text{vs.} \quad \Rho_{76} = -\tau \cdot \text{CallPrice}_{76}$$
+$$\rho_{\text{BS}} = +K \tau e^{-r\tau} \Phi(d_2) \quad \text{vs.} \quad \rho_{76} = -\tau \cdot \text{CallPrice}_{76}$$
 
 *Note:* A Black-Scholes call is **long rates** (higher rates increase forward drift, raising call value), whereas a Black-76 call is **short rates** (higher rates increase the discount factor $e^{-r\tau}$ on a fixed forward).
 
@@ -196,7 +196,7 @@ The analytic forward Greeks used by PRISM are:
 
 | Greek | Call | Put |
 | :--- | :--- | :--- |
-| **Delta** | $df\Phi(d)$ | $$-df\Phi(-d)$ |
+| **Delta** | $df\Phi(d)$ | $-df\Phi(-d)$ |
 | **Gamma** | $\frac{df\phi(d)}{\sigma_N\sqrt{\tau}}$ | Same |
 | **Vega** | $df\sqrt{\tau}\phi(d)$ | Same |
 | **Theta** | $rV-\frac{df\sigma_N\phi(d)}{2\sqrt{\tau}}$ | Same form using put value $V$ |
@@ -274,25 +274,15 @@ $$
 Delta, gamma, and theta are lattice estimates over finite node spacing. Vega, vanna, and vomma require additional volatility-shifted trees:
 
 $$
-\nu
-\approx
-\frac{V(\sigma+h_1)-V(\sigma-h_1)}{2h_1},
+\nu\approx\frac{V(\sigma+h_1)-V(\sigma-h_1)}{2h_1},
 $$
 
 $$
-\mathrm{Vanna}
-=
-\frac{\partial\Delta}{\partial\sigma}
-\approx
-\frac{\Delta(\sigma+h_1)-\Delta(\sigma-h_1)}{2h_1},
+\mathrm{Vanna} = \frac{\partial\Delta}{\partial\sigma}\approx\frac{\Delta(\sigma+h_1)-\Delta(\sigma-h_1)}{2h_1}
 $$
 
 $$
-\mathrm{Vomma}
-=
-\frac{\partial\nu}{\partial\sigma}
-\approx
-\frac{V(\sigma+h_2)-2V(\sigma)+V(\sigma-h_2)}{h_2^2},
+\mathrm{Vomma} = \frac{\partial\nu}{\partial\sigma}\approx\frac{V(\sigma+h_2)-2V(\sigma)+V(\sigma-h_2)}{h_2^2}
 $$
 
 with:
