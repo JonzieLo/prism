@@ -2,8 +2,7 @@
 
 PYTHON ?= python3
 DB ?= snapshots.db
-OUTPUT ?= delta_vs_strike.png
-SNAPSHOT ?= data/snapshots/btc_20260825_snapshot.json.gz
+OUTPUT ?= figs/delta_vs_strike.png
 
 all: test integration snapshot
 
