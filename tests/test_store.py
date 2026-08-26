@@ -3,7 +3,7 @@ from deribit.config import SnapshotUniversalConfig
 from deribit.store import SnapshotStore
 from deribit.ws_client import DeribitWSClient
 
-
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_snapshot_store_roundtrip():
     """Fetches live snapshot, saves to SQLite, and verifies byte-identical reloading."""
