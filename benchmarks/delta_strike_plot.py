@@ -69,59 +69,75 @@ def build_delta_rows(
             continue
 
         try:
+            ##temp: setting foward & rate to Deribit forward & rate
+            forward = quote.api_forward
+            rate = quote.api_rate
             lognormal_vol = black76.implied_vol(
                 mid_usd,
-                quote.forward,
+                # quote.forward,
+                forward,
                 quote.strike,
                 quote.tau,
-                quote.rate,
+                # quote.rate,
+                rate,
                 quote.option_type,
             )
             normal_vol = bachelier.implied_vol(
                 mid_usd,
-                quote.forward,
+                # quote.forward,
+                forward,
                 quote.strike,
                 quote.tau,
-                quote.rate,
+                # quote.rate,
+                rate,
                 quote.option_type,
             )
             black76_greeks = black76.greeks(
-                quote.forward,
+                # quote.forward,
+                forward,
                 quote.strike,
                 quote.tau,
                 lognormal_vol,
-                quote.rate,
+                # quote.rate,
+                rate,
                 quote.option_type,
             )
             binomial_greeks = binomial.greeks(
-                quote.forward,
+                # quote.forward,
+                forward,
                 quote.strike,
                 quote.tau,
                 lognormal_vol,
-                quote.rate,
+                # quote.rate,
+                rate,
                 quote.option_type,
             )
             bachelier_greeks = bachelier.greeks(
-                quote.forward,
+                # quote.forward,
+                forward,
                 quote.strike,
                 quote.tau,
                 normal_vol,
-                quote.rate,
+                # quote.rate,
+                rate,
                 quote.option_type,
             )
             cash_price = black76.price(
-                quote.forward,
+                # quote.forward,
+                forward,
                 quote.strike,
                 quote.tau,
                 lognormal_vol,
-                quote.rate,
+                # quote.rate,
+                rate,
                 quote.option_type,
             )
             inverse = from_forward_greeks(
                 cash_price,
                 black76_greeks,
                 quote.index_price,
-                quote.forward,
+                # quote.forward,
+                forward,
             )
         except ValueError as error:
             dropped.append((quote.instrument_name, str(error)))

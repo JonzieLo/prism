@@ -1,4 +1,4 @@
-.PHONY: all test integration snapshot figure
+.PHONY: all test integration snapshot figure forwards
 
 PYTHON ?= python3
 DB ?= snapshots.db
@@ -14,3 +14,6 @@ integration:
 
 snapshot:
 	$(PYTHON) benchmarks/delta_strike_plot.py --db $(DB) --fetch --output $(OUTPUT)
+
+forwards:
+	$(PYTHON) -m pytest -q -m forwards

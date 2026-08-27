@@ -9,6 +9,8 @@ from conftest import (
     central, second, assert_close,
 )
 
+pytestmark = pytest.mark.pricing
+
 # Bachelier Model Tests
 @pytest.mark.parametrize("strike", [50_000.0, 65_000.0, 80_000.0])
 @pytest.mark.parametrize("cp", ["call", "put"])
