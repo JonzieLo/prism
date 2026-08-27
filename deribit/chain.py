@@ -27,8 +27,8 @@ class OptionQuote:
     open_interest: float | None
     volume: float | None
     last_coin: float | None
-    api_forward: float = None
-    api_rate: float = None
+    api_forward: float | None = None
+    api_rate: float | None = None
 
     @property
     def mid_coin(self) -> float | None:
