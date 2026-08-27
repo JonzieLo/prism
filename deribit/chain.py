@@ -187,7 +187,7 @@ def futures_from_snapshot(
             raise ValueError("Future row has no instrument_name")
 
         if instrument_name in futures:
-            raise ValueError(f"Fuplicate future row: {instrument_name}")
+            raise ValueError(f"Duplicate future row: {instrument_name}")
 
         futures[instrument_name] = FutureQuote(
             instrument_name=instrument_name,

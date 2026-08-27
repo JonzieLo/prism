@@ -98,7 +98,7 @@ def inverse_forward_mid(pair: OptionPair) -> float | None:
 #Independent execution sides
 ### assert synthetic_sell_forward <= forward_mid <= synthetic_buy_forward
 def synthetic_buy_forward(pair: OptionPair) -> float | None:
-    if pair.call.ask_coin is None or pair.put.bid_coin is None:
+    if pair.call.ask_coin is None or pair.put.bid_coin is None or pair.call.ask_coin <= 0.0 or pair.put.bid_coin <= 0.0:
         return None
     denom = (
         1.0 - pair.call.ask_coin + pair.put.bid_coin
@@ -108,7 +108,7 @@ def synthetic_buy_forward(pair: OptionPair) -> float | None:
     return pair.strike/denom
 
 def synthetic_sell_forward(pair: OptionPair) -> float | None:
-    if pair.call.bid_coin is None or pair.put.ask_coin is None:
+    if pair.call.bid_coin is None or pair.put.ask_coin is None or pair.call.bid_coin <= 0.0 or pair.put.ask_coin <= 0.0:
         return None
     denom = (
         1.0 - pair.call.bid_coin + pair.put.ask_coin

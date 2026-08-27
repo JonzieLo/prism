@@ -4,7 +4,7 @@ PYTHON ?= python3
 DB ?= snapshots.db
 OUTPUT ?= figs/delta_vs_strike.png
 
-all: test integration snapshot
+all: test integration snapshot forwards
 
 test:
 	$(PYTHON) -m pytest -q

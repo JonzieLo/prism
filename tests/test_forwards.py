@@ -62,7 +62,7 @@ def test_futures_from_snapshot_maps_market_fields():
                     "bid_price": 80100.0,
                     "ask_price": 80110.0,
                     "mark_price": 80105.0,
-                    "last_price": 80102.0,
+                    "last": 80102.0,
                     # bid_amount
                     # ask_amount
                     "open_interest": 1500.0,
@@ -98,7 +98,7 @@ def test_futures_from_snapshot_raises_on_duplicates():
         }
     }
 
-    with pytest.raises(ValueError, match="Duplicate future instrument"):
+    with pytest.raises(ValueError, match="Duplicate future row: BTC-25DEC26"):
         futures_from_snapshot(snapshot)
 
 

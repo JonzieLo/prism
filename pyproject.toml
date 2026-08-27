@@ -24,6 +24,6 @@ pythonpath = ["."]
 addopts = "-m 'not integration'"
 markers = [
     "integration: tests that call external Deribit services",
-    "forwards: put-call parity, implied forwards, basis, chain forensics"
+    "forwards: put-call parity, implied forwards, basis, chain forensics",
     "pricing: all pricing models - Black-Scholes, Black-76, Binomial, Bachelier, Inverse"
 ]
