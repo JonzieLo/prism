@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass
 from enum import Enum
 
@@ -8,6 +9,8 @@ from .forwards import (OptionPair,ParityPoint,matched_size,inverse_forward_mid, 
 class IssueCode(str, Enum):
     MISSING_BID = "missing_bid"
     MISSING_ASK = "missing_ask"
+    NON_FINITE_BID = "non_finite_bid"
+    NON_FINITE_ASK = "non_finite_ask"
     ZERO_BID = "zero_bid"
     NON_POSITIVE_ASK = "non_positive_ask"
     CROSSED_BOOK = "crossed_book"
@@ -68,6 +71,7 @@ def evaluate_leg(
 ) -> list[QuoteIssue]:
     issues: list[QuoteIssue] = []
 
+    # BID CHECKS
     if quote.bid_coin is None:
         issues.append(
             QuoteIssue(
@@ -78,9 +82,22 @@ def evaluate_leg(
                 frozenset(
                     {
                         Use.DIAGNOSTIC_MID,
-                        Use.SYNTHETIC_SELL
-                        if leg == "call"
-                        else Use.SYNTHETIC_BUY,
+                        Use.SYNTHETIC_SELL if leg == "call" else Use.SYNTHETIC_BUY,
+                    }
+                ),
+            )
+        )
+    elif not math.isfinite(quote.bid_coin):
+        issues.append(
+            QuoteIssue(
+                IssueCode.NON_FINITE_BID,
+                quote.instrument_name,
+                leg,
+                "bid is non-finite (NaN or Inf)",
+                frozenset(
+                    {
+                        Use.DIAGNOSTIC_MID,
+                        Use.SYNTHETIC_SELL if leg == "call" else Use.SYNTHETIC_BUY,
                     }
                 ),
             )
@@ -95,14 +112,13 @@ def evaluate_leg(
                 frozenset(
                     {
                         Use.DIAGNOSTIC_MID,
-                        Use.SYNTHETIC_SELL
-                        if leg == "call"
-                        else Use.SYNTHETIC_BUY,
+                        Use.SYNTHETIC_SELL if leg == "call" else Use.SYNTHETIC_BUY,
                     }
                 ),
             )
         )
 
+    # ASK CHECKS
     if quote.ask_coin is None:
         issues.append(
             QuoteIssue(
@@ -113,9 +129,22 @@ def evaluate_leg(
                 frozenset(
                     {
                         Use.DIAGNOSTIC_MID,
-                        Use.SYNTHETIC_BUY
-                        if leg == "call"
-                        else Use.SYNTHETIC_SELL,
+                        Use.SYNTHETIC_BUY if leg == "call" else Use.SYNTHETIC_SELL,
+                    }
+                ),
+            )
+        )
+    elif not math.isfinite(quote.ask_coin):
+        issues.append(
+            QuoteIssue(
+                IssueCode.NON_FINITE_ASK,
+                quote.instrument_name,
+                leg,
+                "ask is non-finite (NaN or Inf)",
+                frozenset(
+                    {
+                        Use.DIAGNOSTIC_MID,
+                        Use.SYNTHETIC_BUY if leg == "call" else Use.SYNTHETIC_SELL,
                     }
                 ),
             )
@@ -130,48 +159,42 @@ def evaluate_leg(
                 frozenset(
                     {
                         Use.DIAGNOSTIC_MID,
-                        Use.SYNTHETIC_BUY
-                        if leg == "call"
-                        else Use.SYNTHETIC_SELL,
+                        Use.SYNTHETIC_BUY if leg == "call" else Use.SYNTHETIC_SELL,
                     }
                 ),
             )
         )
 
+    # CROSSED & SPREAD CHECKS
     if (
         quote.bid_coin is not None
         and quote.ask_coin is not None
-        and quote.bid_coin > quote.ask_coin
+        and math.isfinite(quote.bid_coin)
+        and math.isfinite(quote.ask_coin)
     ):
-        issues.append(
-            QuoteIssue(
-                IssueCode.CROSSED_BOOK,
-                quote.instrument_name,
-                leg,
-                "bid exceeds ask",
-                frozenset(Use),
-            )
-        )
-
-    if (
-        quote.bid_coin is not None
-        and quote.ask_coin is not None
-        and 0.0 < quote.bid_coin <= quote.ask_coin
-    ):
-        midpoint = 0.5 * (
-            quote.bid_coin + quote.ask_coin
-        )
-        spread = quote.ask_coin - quote.bid_coin
-        if spread > midpoint:
+        if quote.bid_coin > quote.ask_coin:
             issues.append(
                 QuoteIssue(
-                    IssueCode.SPREAD_WIDER_THAN_MID,
+                    IssueCode.CROSSED_BOOK,
                     quote.instrument_name,
                     leg,
-                    "spread is wider than option midpoint",
-                    frozenset({Use.DIAGNOSTIC_MID}),
+                    "bid exceeds ask",
+                    frozenset(Use),
                 )
             )
+        elif 0.0 < quote.bid_coin <= quote.ask_coin:
+            midpoint = 0.5 * (quote.bid_coin + quote.ask_coin)
+            spread = quote.ask_coin - quote.bid_coin
+            if spread > midpoint:
+                issues.append(
+                    QuoteIssue(
+                        IssueCode.SPREAD_WIDER_THAN_MID,
+                        quote.instrument_name,
+                        leg,
+                        "spread is wider than option midpoint",
+                        frozenset({Use.DIAGNOSTIC_MID}),
+                    )
+                )
 
     return issues
 

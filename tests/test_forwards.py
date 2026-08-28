@@ -1,6 +1,7 @@
 import pytest
-from deribit.chain import OptionQuote, FutureQuote, futures_from_snapshot
+from deribit.chain import OptionQuote, FutureQuote, futures_from_snapshot, option_chain_from_snapshot
 from deribit.forwards import *
+from deribit.hygiene import evaluate_and_partition_pairs
 
 pytestmark = pytest.mark.forwards
 
@@ -511,3 +512,65 @@ def test_both_directions_crossing_is_reported_as_invalid_data():
 
     assert comparison.top_of_book_cross_direction == "both_directions_cross"
     assert comparison.status == BasisStatus.BOTH_DIRECTIONS_CROSS.value
+
+
+def test_forward_derivation_without_api_forward_or_mark_iv():
+    snapshot = {
+        "index": {
+            "received_at_ns": 1700000000000000000,
+            "payload": {"index_price": 75000.0},
+        },
+        "instruments": {
+            "received_at_ns": 1700000000000000000,
+            "payload": [
+                {
+                    "kind": "option",
+                    "instrument_name": "BTC-25DEC26-75000-C",
+                    "option_type": "call",
+                    "strike": 75000,
+                    "expiration_timestamp": 1798185600000,
+                    "settlement_currency": "BTC",
+                    "contract_size": 1.0,
+                },
+                {
+                    "kind": "option",
+                    "instrument_name": "BTC-25DEC26-75000-P",
+                    "option_type": "put",
+                    "strike": 75000,
+                    "expiration_timestamp": 1798185600000,
+                    "settlement_currency": "BTC",
+                    "contract_size": 1.0,
+                },
+            ],
+        },
+        "options": {
+            "received_at_ns": 1700000000000000000,
+            "payload": [
+                {
+                    "instrument_name": "BTC-25DEC26-75000-C",
+                    "underlying_index": "BTC-25DEC26",
+                    "underlying_price": None,  # Missing API forward
+                    "mark_iv": None,           # Missing Mark IV
+                    "bid_price": 0.10,
+                    "ask_price": 0.10,
+                },
+                {
+                    "instrument_name": "BTC-25DEC26-75000-P",
+                    "underlying_index": "BTC-25DEC26",
+                    "underlying_price": None,  # Missing API forward
+                    "mark_iv": None,           # Missing Mark IV
+                    "bid_price": 0.0375,
+                    "ask_price": 0.0375,
+                },
+            ],
+        },
+    }
+
+    chain = option_chain_from_snapshot(snapshot)
+    assert len(chain) == 2
+    pairs, issues = pair_calls_and_puts(chain)
+    assert len(pairs) == 1
+    diag, buy, sell, evaluated = evaluate_and_partition_pairs(pairs)
+    assert len(diag) == 1
+    expiry_fw = aggregate_expiry_forward(diag, buy, sell)
+    assert expiry_fw.implied_forward == pytest.approx(80000.0)

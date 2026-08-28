@@ -93,16 +93,15 @@ def option_chain_from_snapshot(snapshot: dict[str, Any],) -> list[OptionQuote]:
         forward = market.get("underlying_price")
         expiration = spec.get("expiration_timestamp")
         strike = spec.get("strike")
-        if forward is None or expiration is None or strike is None:
+        if expiration is None or strike is None:
             continue
-        if forward <= 0.0 or strike <= 0.0:
+        if strike <= 0.0:
             continue
 
         tau = (expiration - snapshot_ms) / MILLISECONDS_PER_YEAR
         if tau <= 0.0:
             continue
 
-        rate = math.log(forward / index_price) / tau
         mark_iv_percent = market.get("mark_iv")
 
         chain.append(

@@ -282,11 +282,11 @@ def plot_delta_rows(
             )
             # Mark Forward Price
             axis.axvline(
-                first.forward, 
+                first.api_forward, 
                 color="#28251D", 
                 ls="--", 
                 lw=1.2, 
-                label=f"Forward F (${first.forward:,.0f})"
+                label=f"Forward F (${first.api_forward:,.0f})"
             )
             axis.grid(axis="y", color="#D4D1CA", lw=0.8, alpha=0.7)
             axis.grid(axis="x", visible=False)
@@ -314,7 +314,7 @@ def plot_delta_rows(
             -0.02,
             (
                 f"Expiry {expiry} | X={first.index_price:,.2f} | "
-                f"F={first.forward:,.2f} | kept={len(rows)} | "
+                f"F={first.api_forward:,.2f} | kept={len(rows)} | "
                 f"dropped={dropped_count} | median |own IV − mark IV|="
                 f"{cross_check}"
             ),

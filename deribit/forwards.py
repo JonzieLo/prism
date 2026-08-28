@@ -69,6 +69,8 @@ class BasisStatus(str, Enum):
     MISSING_FUTURE = "missing_future"
     INVALID_FUTURE_MARK = "invalid_future_mark"
     CROSSED_FUTURE = "crossed_future"
+    INVALID_FUTURE_BOOK = "invalid_future_book"
+    PRICE_CROSS = "price_cross"
     BOTH_DIRECTIONS_CROSS = "both_directions_cross"
 
 def pair_calls_and_puts(
@@ -191,16 +193,25 @@ def inverse_forward_mid(pair: OptionPair) -> float | None:
 
     if call_mid is None or put_mid is None:
         return None
-
+    if not math.isfinite(call_mid) or not math.isfinite(put_mid):
+        return None
+    
     denom = 1.0 - call_mid + put_mid
-    if denom <= 0.0:
+    if denom <= 0.0 or not math.isfinite(denom):
         raise ValueError("Invalid inverse parity denominator")
     return pair.strike/denom
 
 #Independent execution sides
 ### assert synthetic_sell_forward <= forward_mid <= synthetic_buy_forward
 def synthetic_buy_forward(pair: OptionPair) -> float | None:
-    if pair.call.ask_coin is None or pair.put.bid_coin is None or pair.call.ask_coin <= 0.0 or pair.put.bid_coin <= 0.0:
+    if (
+        pair.call.ask_coin is None
+        or pair.put.bid_coin is None
+        or not math.isfinite(pair.call.ask_coin)
+        or not math.isfinite(pair.put.bid_coin)
+        or pair.call.ask_coin <= 0.0
+        or pair.put.bid_coin <= 0.0
+    ):
         return None
     denom = (
         1.0 - pair.call.ask_coin + pair.put.bid_coin
@@ -210,7 +221,14 @@ def synthetic_buy_forward(pair: OptionPair) -> float | None:
     return pair.strike/denom
 
 def synthetic_sell_forward(pair: OptionPair) -> float | None:
-    if pair.call.bid_coin is None or pair.put.ask_coin is None or pair.call.bid_coin <= 0.0 or pair.put.ask_coin <= 0.0:
+    if (
+        pair.call.bid_coin is None
+        or pair.put.ask_coin is None
+        or not math.isfinite(pair.call.bid_coin)
+        or not math.isfinite(pair.put.ask_coin)
+        or pair.call.bid_coin <= 0.0
+        or pair.put.ask_coin <= 0.0
+    ):
         return None
     denom = (
         1.0 - pair.call.bid_coin + pair.put.ask_coin
