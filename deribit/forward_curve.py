@@ -36,7 +36,19 @@ class ForwardCurveResult:
 
 
 def _filter_counts(evaluated: list[EvaluatedPair]) -> tuple[FilterCount, ...]:
-    return tuple()
+    total = len(evaluated)
+    affected: Counter[IssueCode] = Counter()
+    for item in evaluated:
+        for code in {issue.code for issue in item.issues}:
+            affected[code] += 1
+    return tuple(
+        FilterCount(
+            reason=code.value,
+            pair_count=count,
+            fraction=count/total if total else 0.0,
+        )
+        for code, count in sorted(affected.item(), key=lambda item: item[0].value)
+    )
 
 def build_forward_curve(
         snapshot: dict
@@ -69,7 +81,20 @@ def build_forward_curve(
         key = (underlying_index, expiration)
         points = diagnostic_by_expiry.get(key,[])
         if not points:
-            ...
+            reason = (
+                "no_diagnostic_eligible_pairs"
+                if key in paired_keys
+                else "no_complete_call_put_pairs"
+            )
+            expiry_issues.append(
+                ExpiryIssue(
+                expiration_timestamp=expiration,
+                underlying_index=underlying_index,
+                reason=reason,
+                )
+            )
+            continue
+
         expiry_forward = aggregate_expiry_forward(
             points,
             buys_by_expiry.get(key, []),
