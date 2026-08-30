@@ -103,9 +103,13 @@ def build_forward_curve(
             sells_by_expiry.get(key, []),
         )
         expiry_forwards.append(expiry_forward)
+
+        future = futures.get(underlying_index)
+        if future is None and underlying_index.startswith("SYN."): #synthetic option
+            future = futures.get(underlying_index.removeprefix("SYN."))
         comparisons.append(
             compare_with_future(
-            expiry_forward, underlying_index
+            expiry_forward, future
             )
         )
 
