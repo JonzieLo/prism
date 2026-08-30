@@ -35,7 +35,10 @@ class ForwardCurveResult:
     expiry_issues: tuple[ExpiryIssue, ...]
 
 def _group_points(points: list[ParityPoint]) -> dict[tuple[str, int], list[ParityPoint]]:
-    return dict()
+    grouped: dict[tuple[str,int], list[ParityPoint]] = defaultdict(list)
+    for point in points:
+        grouped[(point.underlying_index, point.expiration_timestamp)].append(point)
+    return grouped
 
 def _filter_counts(evaluated: list[EvaluatedPair]) -> tuple[FilterCount, ...]:
     total = len(evaluated)
