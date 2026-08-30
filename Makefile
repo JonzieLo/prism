@@ -1,8 +1,9 @@
-.PHONY: all test integration snapshot figure forwards
+.PHONY: all test integration snapshot figure forwards forward-curve
 
 PYTHON ?= python3
 DB ?= snapshots.db
 OUTPUT ?= figs/delta_vs_strike.png
+FORWARD_OUTPUT ?= figs/forward_curve.png
 
 all: test integration snapshot forwards
 
@@ -13,7 +14,10 @@ integration:
 	$(PYTHON) -m pytest -q -m integration
 
 snapshot:
-	$(PYTHON) benchmarks/delta_strike_plot.py --db $(DB) --fetch --output $(OUTPUT)
+	$(PYTHON) -m benchmarks.delta_strike_plot --db $(DB) --fetch --output $(OUTPUT)
 
 forwards:
 	$(PYTHON) -m pytest -q -m forwards
+
+forward_curve:
+	$(PYTHON) -m benchmarks.forward_curve_plot --db $(DB) --fetch --output $(FORWARD_OUTPUT)

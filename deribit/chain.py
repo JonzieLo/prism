@@ -58,6 +58,12 @@ class FutureQuote:
     open_interest: float | None
     contract_size: float | None
 
+@dataclass(frozen=True)
+class ChainIssue:
+    source_row_id: int
+    instrument_name: str | None
+    reason: str
+
 def _snapshot_time_ms(snapshot: dict[str, Any]) -> float:
     received = [
         response["received_at_ns"]
@@ -69,7 +75,7 @@ def _snapshot_time_ms(snapshot: dict[str, Any]) -> float:
     return max(received) / 1_000_000.0
 
 
-def option_chain_from_snapshot(snapshot: dict[str, Any],) -> list[OptionQuote]:
+def option_chain_report_from_snapshot(snapshot: dict[str, Any],) -> tuple[list[OptionQuote], list[ChainIssue]]:
     instruments = snapshot.get("instruments", {}).get("payload") or []
     market_rows = snapshot.get("options", {}).get("payload") or []
     index_payload = snapshot.get("index", {}).get("payload") or {}
@@ -84,22 +90,45 @@ def option_chain_from_snapshot(snapshot: dict[str, Any],) -> list[OptionQuote]:
         if row.get("kind") == "option"
     }
     chain: list[OptionQuote] = []
+    issues: list[ChainIssue] = []
 
     for source_row_id, market in enumerate(market_rows):
-        spec = specs.get(market.get("instrument_name"))
+        instrument_name = market.get("instrument_name")
+        spec = specs.get(instrument_name)
         if spec is None:
-            continue
+            issues.append(ChainIssue(source_row_id, instrument_name, "missing_instrument_spec"))
 
-        forward = market.get("underlying_price")
         expiration = spec.get("expiration_timestamp")
         strike = spec.get("strike")
-        if expiration is None or strike is None:
+        option_type = spec.get("option_type")
+        settlement_currency = spec.get("settlement_currency")
+        contract_size = spec.get("contract_size")
+        if expiration is None:
+            issues.append(ChainIssue(source_row_id, instrument_name, "missing_expiration"))
             continue
-        if strike <= 0.0:
+        if strike is None:
+            issues.append(ChainIssue(source_row_id, instrument_name, "missing_strike"))
+            continue
+        if not math.isfinite(strike) or strike <= 0.0:
+            issues.append(ChainIssue(source_row_id, instrument_name, "invalid_strike"))
+            continue
+        if option_type not in {"call", "put"}:
+            issues.append(ChainIssue(source_row_id, instrument_name, "invalid_option_type"))
+            continue
+        if not isinstance(settlement_currency, str) or not settlement_currency:
+            issues.append(ChainIssue(source_row_id, instrument_name, "invalid_settlement_currency"))
+            continue
+        if (
+            not isinstance(contract_size, (int, float))
+            or not math.isfinite(contract_size)
+            or contract_size <= 0.0
+        ):
+            issues.append(ChainIssue(source_row_id, instrument_name, "invalid_contract_size"))
             continue
 
         tau = (expiration - snapshot_ms) / MILLISECONDS_PER_YEAR
         if tau <= 0.0:
+            issues.append(ChainIssue(source_row_id, instrument_name, "expired_option"))
             continue
 
         mark_iv_percent = market.get("mark_iv")
@@ -108,12 +137,12 @@ def option_chain_from_snapshot(snapshot: dict[str, Any],) -> list[OptionQuote]:
             OptionQuote(
                 source_row_id=source_row_id,
                 instrument_name=spec["instrument_name"],
-                option_type=spec["option_type"],
+                option_type=option_type,
                 strike=float(strike),
                 expiration_timestamp=int(expiration),
                 underlying_index=market.get("underlying_index"),
-                settlement_currency=spec.get("settlement_currency"),
-                contract_size=spec.get("contract_size"),
+                settlement_currency=settlement_currency,
+                contract_size=float(contract_size),
                 index_price=float(index_price),
                 api_forward=market.get("underlying_price"),
                 api_rate=market.get("interest_rate"),
@@ -134,8 +163,13 @@ def option_chain_from_snapshot(snapshot: dict[str, Any],) -> list[OptionQuote]:
             )
         )
 
-    return chain
+    return chain, issues
 
+def option_chain_from_snapshot(
+        snapshot:dict[str, Any]
+) -> list[OptionQuote]:
+    chain, _ = option_chain_report_from_snapshot(snapshot)
+    return chain
 
 def select_expiry(
     chain: list[OptionQuote],
