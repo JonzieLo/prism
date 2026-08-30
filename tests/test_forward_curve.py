@@ -107,3 +107,65 @@ def test_build_forward_curve_runs_without_api_forward_or_mark_iv():
     counts = {item.reason: item.pair_count for item in result.filter_counts}
     assert counts["missing_api_forward"] == 1
     assert counts["missing_mark_iv"] == 1
+
+def test_expiry_without_diagnostic_pair_is_reported_not_silently_dropped():
+    result = build_forward_curve(make_snapshot(call_bid=0.0))
+
+    assert not result.expiry_forwards
+    assert len(result.expiry_issues) == 1
+    assert result.expiry_issues[0].reason == "no_diagnostic_eligible_pairs"
+    assert result.synthetic_buy_pair_count == 1
+
+def test_filter_fraction_counts_each_pair_once_per_reason():
+    result = build_forward_curve(make_snapshot(call_bid=0.0))
+    counts = {item.reason: item for item in result.filter_counts}
+
+    assert counts["zero_bid"].pair_count == 1
+    assert counts["zero_bid"].fraction == pytest.approx(1.0)
+    assert counts["missing_api_forward"].pair_count == 1
+
+
+def test_synthetic_underlying_index_joins_plain_future_name():
+    snapshot = make_snapshot()
+    for row in snapshot["options"]["payload"]:
+        row["underlying_index"] = "SYN.BTC-25DEC26"
+
+    result = build_forward_curve(snapshot)
+
+    assert result.comparisons[0].underlying_index == "SYN.BTC-25DEC26"
+    assert result.comparisons[0].future_mark == pytest.approx(80_000.0)
+    assert result.comparisons[0].status == BasisStatus.OK.value
+
+
+def test_expiry_with_only_unpaired_quote_is_reported():
+    snapshot = make_snapshot()
+    snapshot["options"]["payload"] = snapshot["options"]["payload"][:1]
+
+    result = build_forward_curve(snapshot)
+
+    assert not result.expiry_forwards
+    assert result.pairing_issue_quote_count == 1
+    assert len(result.expiry_issues) == 1
+    assert result.expiry_issues[0].reason == "no_complete_call_put_pairs"
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("settlement_currency", None, "invalid_settlement_currency"),
+        ("contract_size", None, "invalid_contract_size"),
+        ("contract_size", 0.0, "invalid_contract_size"),
+        ("contract_size", float("nan"), "invalid_contract_size"),
+    ],
+)
+def test_invalid_contract_metadata_is_counted_during_normalization(
+    field: str,
+    value,
+    reason: str,
+):
+    snapshot = make_snapshot()
+    snapshot["instruments"]["payload"][0][field] = value
+
+    result = build_forward_curve(snapshot)
+
+    assert result.raw_option_count == len(result.quotes) + len(result.chain_issues)
+    assert any(issue.reason == reason for issue in result.chain_issues)

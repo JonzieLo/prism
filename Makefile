@@ -1,6 +1,7 @@
 .PHONY: all test integration snapshot figure forwards forward-curve
 
-PYTHON ?= python3
+# PYTHON ?= python3
+PYTHON := .venv/bin/python
 DB ?= snapshots.db
 OUTPUT ?= figs/delta_vs_strike.png
 FORWARD_OUTPUT ?= figs/forward_curve.png
