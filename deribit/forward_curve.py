@@ -149,8 +149,3 @@ def build_forward_curve(
         comparisons=tuple(comparisons),
         expiry_issues=tuple(expiry_issues),
     )
-
-
-def format_chain_report(result: ForwardCurveResult) -> str:
-    lines = []
-    return "\n".join(lines)
