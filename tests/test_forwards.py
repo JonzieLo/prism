@@ -463,17 +463,17 @@ def test_invalid_mark_leaves_midpoint_basis_unavailable():
 
 def test_valid_future_bid_can_still_produce_price_cross_when_mark_unavailable():
     ef = make_expiry_forward(best_buy=80000.0)
-    future = make_future(bid=80100.0, mark=None)
+    future = make_future(bid=80100.0, ask=80200.0, mark=None)
 
     comparison = compare_with_future(ef, future)
 
     assert comparison.top_of_book_cross_direction == "buy_synthetic_sell_future"
-    assert comparison.status == BasisStatus.CROSSED_FUTURE.value
+    assert comparison.status == BasisStatus.PRICE_CROSS.value
 
 
 def test_equality_produces_no_cross():
     ef = make_expiry_forward(best_buy=80100.0, best_sell=79900.0)
-    future = make_future(bid=80100.0, ask=79900.0)
+    future = make_future(bid=79900.0, ask=80100.0)
 
     comparison = compare_with_future(ef, future)
 
@@ -489,7 +489,7 @@ def test_buy_synthetic_sell_future_direction_is_correct():
     comparison = compare_with_future(ef, future)
 
     assert comparison.top_of_book_cross_direction == "buy_synthetic_sell_future"
-    assert comparison.status == BasisStatus.CROSSED_FUTURE.value
+    assert comparison.status == BasisStatus.PRICE_CROSS.value
 
 
 def test_buy_future_sell_synthetic_direction_is_correct():
@@ -500,7 +500,7 @@ def test_buy_future_sell_synthetic_direction_is_correct():
     comparison = compare_with_future(ef, future)
 
     assert comparison.top_of_book_cross_direction == "sell_synthetic_buy_future"
-    assert comparison.status == BasisStatus.CROSSED_FUTURE.value
+    assert comparison.status == BasisStatus.PRICE_CROSS.value
 
 
 def test_both_directions_crossing_is_reported_as_invalid_data():

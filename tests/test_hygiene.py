@@ -154,10 +154,11 @@ def test_evaluate_and_partition_pairs_filters_correctly():
     pair = OptionPair(1798185600000, "BTC-25DEC26", 75000.0, call_zero_put_bid, put_zero_bid)
 
     diag, buy, sell, evaluated = evaluate_and_partition_pairs([pair])
+    evaluated_point = evaluated[0].point
 
-    assert pair.point not in diag
-    assert pair.point not in buy
-    assert pair.point in sell
+    assert evaluated_point not in diag
+    assert evaluated_point not in buy
+    assert evaluated_point in sell
     assert len(evaluated) == 1
 
 
@@ -177,12 +178,15 @@ def test_spread_wider_than_midpoint_blocks_mid_only():
 
 
 def test_invalid_denominators_separately():
-    call = make_dummy_quote("call", bid_coin=0.95, ask_coin=0.98)
-    put = make_dummy_quote("put", bid_coin=0.01, ask_coin=0.02)
+    call = make_dummy_quote("call", bid_coin=1.01, ask_coin=1.02)
+    put = make_dummy_quote("put", bid_coin=0.001, ask_coin=0.002)
     pair = OptionPair(1798185600000, "BTC-25DEC26", 75000.0, call, put)
 
     evaluated = evaluate_pair(pair)
     # (1.0 - call_mid + put_mid) <= 0
+
+    evaluated = evaluate_pair(pair)
+
     codes = [issue.code for issue in evaluated.issues]
     assert IssueCode.INVALID_MID_DENOMINATOR in codes
     assert IssueCode.INVALID_BUY_DENOMINATOR in codes
