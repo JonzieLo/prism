@@ -52,7 +52,7 @@ def _filter_counts(evaluated: list[EvaluatedPair]) -> tuple[FilterCount, ...]:
             pair_count=count,
             fraction=count/total if total else 0.0,
         )
-        for code, count in sorted(affected.item(), key=lambda item: item[0].value)
+        for code, count in sorted(affected.items(), key=lambda item: item[0].value)
     )
 
 def build_forward_curve(
@@ -149,3 +149,8 @@ def build_forward_curve(
         comparisons=tuple(comparisons),
         expiry_issues=tuple(expiry_issues),
     )
+
+
+def format_chain_report(result: ForwardCurveResult) -> str:
+    lines = []
+    return "\n".join(lines)
