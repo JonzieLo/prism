@@ -34,6 +34,8 @@ class ForwardCurveResult:
     comparisons: tuple[BasisComparison, ...]
     expiry_issues: tuple[ExpiryIssue, ...]
 
+def _group_points(points: list[ParityPoint]) -> dict[tuple[str, int], list[ParityPoint]]:
+    return dict()
 
 def _filter_counts(evaluated: list[EvaluatedPair]) -> tuple[FilterCount, ...]:
     total = len(evaluated)
@@ -58,9 +60,9 @@ def build_forward_curve(
     pairs, pairing_issues = pair_calls_and_puts(quotes)
     diagnostic, buys, sells, evaluated = evaluate_and_partition_pairs(pairs)
 
-    diagnostic_by_expiry = ...
-    buys_by_expiry = ...
-    sells_by_expiry = ...
+    diagnostic_by_expiry = _group_points(diagnostic)
+    buys_by_expiry = _group_points(buys)
+    sells_by_expiry = _group_points(sells)
     paired_keys = {
         (item.pair.underlying_index, item.pair.expiration_timestamp)
         for item in evaluated
