@@ -341,6 +341,45 @@ def compare_with_future(
             status=BasisStatus.MISSING_FUTURE.value,
         )
 
+    future_book_valid = True
+    if future.bid is not None:
+        if not math.isfinite(future.bid) or future.bid <= 0.0:
+            future_book_valid = False
+    if future.ask is not None:
+        if not math.isfinite(future.ask) or future.ask <= 0.0:
+            future_book_valid = False
+    if (
+        future.bid is not None
+        and future.ask is not None
+        and future_book_valid
+        and future.bid > future.ask
+    ):
+        future_book_valid = False
+
+    if not future_book_valid:
+        has_valid_mark = (
+            future.mark is not None
+            and math.isfinite(future.mark)
+            and future.mark > 0.0
+        )
+        basis_usd = (expiry_forward.implied_forward - future.mark) if has_valid_mark else None
+        basis_bps = (10_000.0 * (expiry_forward.implied_forward / future.mark - 1.0)) if has_valid_mark else None
+
+        return BasisComparison(
+            expiration_timestamp=expiry_forward.expiration_timestamp,
+            underlying_index=expiry_forward.underlying_index,
+            implied_forward=expiry_forward.implied_forward,
+            future_bid=future.bid,
+            future_ask=future.ask,
+            future_mark=future.mark,
+            basis_usd=basis_usd,
+            basis_bps=basis_bps,
+            best_synthetic_buy=expiry_forward.best_synthetic_buy,
+            best_synthetic_sell=expiry_forward.best_synthetic_sell,
+            top_of_book_cross_direction=None,
+            status=BasisStatus.INVALID_FUTURE_BOOK.value,
+        )
+
     buy_cross = (
         future.bid is not None
         and expiry_forward.best_synthetic_buy is not None
@@ -358,14 +397,15 @@ def compare_with_future(
         status = BasisStatus.BOTH_DIRECTIONS_CROSS.value
     elif buy_cross:
         cross_direction = "buy_synthetic_sell_future"
-        status = BasisStatus.CROSSED_FUTURE.value
+        status = BasisStatus.PRICE_CROSS.value
     elif sell_cross:
         cross_direction = "sell_synthetic_buy_future"
-        status = BasisStatus.CROSSED_FUTURE.value
+        status = BasisStatus.PRICE_CROSS.value
     else:
         cross_direction = None
         status = BasisStatus.OK.value
 
+    # Midpoint Basis
     has_valid_mark = (
         future.mark is not None 
         and math.isfinite(future.mark) 

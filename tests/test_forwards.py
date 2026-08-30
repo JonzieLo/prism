@@ -574,3 +574,66 @@ def test_forward_derivation_without_api_forward_or_mark_iv():
     assert len(diag) == 1
     expiry_fw = aggregate_expiry_forward(diag, buy, sell)
     assert expiry_fw.implied_forward == pytest.approx(80000.0)
+
+
+def test_input_quote_reconciliation():
+    c1 = make_dummy_quote(source_row_id=10, option_type="call", strike=70000.0)
+    p1 = make_dummy_quote(source_row_id=11, option_type="put", strike=70000.0)
+    c2_dup1 = make_dummy_quote(source_row_id=12, option_type="call", strike=75000.0)
+    c2_dup2 = make_dummy_quote(source_row_id=13, option_type="call", strike=75000.0)
+    p2 = make_dummy_quote(source_row_id=14, option_type="put", strike=75000.0)
+
+    input_quotes = [c1, p1, c2_dup1, c2_dup2, p2]
+    pairs, issues = pair_calls_and_puts(input_quotes)
+
+    input_ids = {q.source_row_id for q in input_quotes}
+    
+    paired_ids = set()
+    for pair in pairs:
+        paired_ids.add(pair.call.source_row_id)
+        paired_ids.add(pair.put.source_row_id)
+
+    issue_ids = set()
+    for issue in issues:
+        issue_ids.update(issue.source_row_ids)
+
+    assert input_ids == paired_ids | issue_ids
+    assert len(paired_ids & issue_ids) == 0
+
+
+def test_one_extreme_wing_does_not_materially_move_median_forward():
+    normal_points = [
+        make_point(70000.0, forward_mid=79950.0),
+        make_point(75000.0, forward_mid=80000.0),
+        make_point(80000.0, forward_mid=80050.0),
+    ]
+
+    clean_agg = aggregate_expiry_forward(normal_points, normal_points, normal_points)
+
+    outlier_points = normal_points + [make_point(120000.0, forward_mid=150000.0)]
+    outlier_agg = aggregate_expiry_forward(outlier_points, outlier_points, outlier_points)
+
+    # Median is stable (moves from 80000 to 80025)
+    assert abs(outlier_agg.implied_forward - clean_agg.implied_forward) <= 50.0
+    assert outlier_agg.dispersion_mad >= clean_agg.dispersion_mad
+
+
+def test_compare_with_future_invalid_futures_book():
+    ef = make_expiry_forward()
+    # Crossed futures book: bid > ask
+    future_crossed = make_future(bid=80200.0, ask=80100.0)
+
+    comparison = compare_with_future(ef, future_crossed)
+    assert comparison.status == BasisStatus.INVALID_FUTURE_BOOK.value
+    assert comparison.top_of_book_cross_direction is None
+
+
+def test_compare_with_future_non_finite_or_non_positive():
+    ef = make_expiry_forward()
+    # Non-positive mark
+    future_zero_mark = make_future(mark=0.0)
+    assert compare_with_future(ef, future_zero_mark).basis_usd is None
+
+    # Non-finite price
+    future_nan = make_future(bid=float("nan"))
+    assert compare_with_future(ef, future_nan).status == BasisStatus.INVALID_FUTURE_BOOK.value
