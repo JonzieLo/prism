@@ -9,7 +9,9 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from collections.abc import Mapping
 
+from deribit.forward_curve import build_forward_curve
 from deribit.chain import (
     OptionQuote,
     option_chain_from_snapshot,
@@ -55,6 +57,7 @@ async def fetch_snapshot(
 def build_delta_rows(
     quotes: list[OptionQuote],
     steps: int,
+    forward_by_expiry: Mapping[tuple[str, int], float],
 ) -> tuple[list[DeltaRow], list[tuple[str, str]]]:
     black76 = Black76Model()
     bachelier = BachelierModel()
@@ -69,9 +72,17 @@ def build_delta_rows(
             continue
 
         try:
-            ##temp: setting foward & rate to Deribit forward & rate
-            forward = quote.api_forward
-            rate = quote.api_rate
+            key = (
+                quote.underlying_index,
+                quote.expiration_timestamp,
+            )
+
+            forward = forward_by_expiry.get(key)
+            if forward is None:
+                dropped.append((quote.instrument_name,"No parity-derived forward for expiry",))
+                continue
+
+            rate = math.log(forward / quote.index_price) / quote.tau
             lognormal_vol = black76.implied_vol(
                 mid_usd,
                 # quote.forward,
@@ -370,9 +381,26 @@ def main() -> None:
     if snapshot is None:
         raise SystemExit(f"Nnapshot {snapshot_id} does not exist")
 
+    curve_result = build_forward_curve(snapshot)
+    forward_by_expiry = {
+        (
+            expiry_forward.underlying_index,
+            expiry_forward.expiration_timestamp,
+        ): expiry_forward.implied_forward
+        for expiry_forward in curve_result.expiry_forwards
+    }
     chain = option_chain_from_snapshot(snapshot)
     selected = select_expiry(chain, args.option_type, args.expiry)
-    rows, dropped = build_delta_rows(selected, args.steps)
+
+    selected_key = (
+        selected[0].underlying_index,
+        selected[0].expiration_timestamp,
+    )
+    if selected_key not in forward_by_expiry:
+        raise SystemExit(
+            "Selected expiry has no diagnostic-eligible options-implied forward."
+        )
+    rows, dropped = build_delta_rows(selected, args.steps, forward_by_expiry,)
     plot_delta_rows(
         rows,
         Path(args.output),
