@@ -11,6 +11,7 @@ import numpy as np
 from deribit.config import SnapshotUniversalConfig
 from deribit.forward_curve import *
 from deribit.forwards import BasisStatus
+from deribit.segmentation import build_moneyness_segmentation, format_moneyness_table
 from deribit.store import SnapshotStore
 from deribit.ws_client import DeribitWSClient
 
@@ -347,6 +348,12 @@ if __name__ == "__main__":
         raise SystemExit(f"Snapshot {snapshot_id} does not exist")
 
     result = build_forward_curve(snapshot)
+    if result.expiry_forwards:
+        target_expiry = result.expiry_forwards[0]  # or selected diagnostic expiry
+        metrics = build_moneyness_segmentation(
+            result.evaluated_pairs, target_expiry
+        )
+        print("\n" + format_moneyness_table(metrics))
     plot_forward_curve(
         result,
         Path(args.output),
