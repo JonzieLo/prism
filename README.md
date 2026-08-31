@@ -8,13 +8,11 @@ python -m pip install -e .
 # All unit tests
 make test
 
-# Deribit connection tests
-make integration
-
-# Capture a live snapshot and render delta/strike figure
+# Capture live snapshot -> render delta,strike/forward-curve figure 
 make snapshot
+make forward_curve
 
-# Run tests and reproduce the checked-in report figure
+# Run tests and reproduce the report figures
 make all
 ```
 
@@ -360,9 +358,14 @@ $$
 
 Deribit defines `underlying_price` as the price used for option Implied Volatility (IV) calculations and supplies mark price and mark IV in its option summary ([Deribit book-summary API](https://docs.deribit.com/api-reference/market-data/public-get_book_summary_by_currency)). PRISM does not use the published mark IV as a model input.
 
+Calculating the delta from PRISM's derived forwards:
+$$
+F=F_\text{options}, \quad r=\frac{\ln(\frac{F}{X})}{\tau}
+$$
+
 ![Call Delta by Strike](figs/delta_vs_strike.png)
 
-The upper panel shows model deltas. They generally decrease from one toward zero as call strike rises. Cox-Binomial should track Black-76 with finite-step oscillation; Bachelier can differ in the wings because normal and lognormal tails differ.
+The upper panel shows model deltas ($\Delta$). They generally decrease from one toward zero as call strike rises. Cox-Binomial should track Black-76 with finite-step oscillation; Bachelier can differ in the wings because normal and lognormal tails differ.
 
 The lower panel shows inverse NTD. Its hump shape may be interpreted as:
 
@@ -384,7 +387,104 @@ Stopping rules evaluated in dollar space ($|P_{\text{calc}} - P_{\text{market}}|
 
 $$\left| \frac{P_{\text{calc}} - P_{\text{market}}}{\mathcal{V}} \right| < 10^{-10}$$
 
----
+## Forward Curve & Chain Data Cleaning
+
+Options of the same expiry should be priced relative to the same expiry forward. Using the current index in place of the forward changes moneyness and can create an artifical volatility skew. Hence, PRISM derives the forward from the same option chain before using it in Implied Volatility inversion or Greek calculations.
+
+### Index, Forward, and Premium Conversion
+
+Deribit's BTC Index $X$ is the current USD value of one BTC. An inverse option premium $c$ is quoted in BTC, so its current USD-equivalent value is:
+$$
+V_{\text{USD}}=X_C
+$$
+
+This conversion does *not* make the index the option's pricing underlying.
+PRISM uses:
+* the synchronised index $X$ to convert the current BTC premium into USD;
+* the options-implied expiry forward $F$ for moneyness and foward-model inputs;
+* a rate consistent between the two quantities:
+$$
+r = \frac{\ln(\frac{F}{X})}{\tau}
+$$
+
+Deribit's published `underlying_price` and `mark iv` are retained only for post-hoc comparison. These shoudl not be used in forward derivation or implied-volatility calucations.
+
+### Inverse Put-Call Parity
+
+Under PRISM's current unit-BTC discount factor convention, call and put premiums in BTC satisfy:
+$$
+c-p = 1-\frac{K}{F}
+$$
+Solving for the expiry forward, we get:
+$$
+F = \frac{K}{1-c+p}
+$$
+
+Therefore, every strike with both a call and a put provides an independent forward observation. 
+
+Calculating for a midpoint estimate and two execution-side estimates:
+$$
+F_\text{mid}=\frac{K}{1 - c_\text{mid} + p_\text{mid}}
+$$
+$$
+F_\text{buy}=\frac{K}{1 - c_\text{ask} + p_\text{bid}}
+$$
+$$
+F_\text{sell}=\frac{K}{1 - c_\text{bid} + p_\text{ask}}
+$$
+
+$F_\text{buy}$ represents buying the synthetic foward by buying the call and selling the put.  
+$F_\text{sell}$ represents selling the synthetic foward by selling the call and buying the put.  
+The two directions are checked *independently* because a missing/zero bid can invalidate one side without invalidating the other.
+
+### Pairing and Quote Hygiene
+
+Calls and puts are paired only when expiry, strike and `underlying_index` match, and when settlement currency and contract size agree.
+
+Each option leg is checked for:
+* missing/non-finite bids & asks,
+* zero bids/non-positive bids,
+* crossed books,
+* a bid-ask spread wider than the option midpoint
+
+Each bid-ask pair is also check for invalid midpoint, synthetic-buy/synthetic-sell parity denominators. Missing API forward and Deribit mark IV's are recorded as non-blocking comparison issues.
+
+### Expiry Forward and Bias
+
+For each expiry, PRISM uses the median of diagnostic-eligible $F_\text{mid}$ observations. PRISM reports:
+* The median options-implied forward;
+* median absolute deviation;
+* interquartile range;
+* number of eligible call-put pairs;
+* cheapest eligible synthetic buy;
+* richest eligible synthetic sell.
+
+Midpoint basis is:
+$$
+\text{Basis}_\text{USD} = F_\text{options} - F_\text{future}
+$$
+$$
+\text{Basis}_\text{bps} = \text{10,000}(\frac{F_\text{options}}{F_\text{future}}-1)
+$$
+
+A positive value means the option chain implies a higher foward than the future mark, negative value implying a lower foward.
+
+![Forward Curve](figs/forward_curve.png)
+
+The upper panel shows that the option-implied foward broadly tracks the traded futures curve. The upward-sloping curve is not by itself proof that the market expects spot to rise because futures prices also reflect funding, financing, positioning and market supply/demand.
+
+The middle panel shows that the remaining midpoint basis is generally a few basis points. These differences are not directly executable, since a midpoint is nto a price at which both legs can necessarily be traded.
+
+The lwoer panel is the individual strike-level forward estimations for one expiry. Estimates cluster arond the expiry median, while synthetic buy-sell ranges generally widen in the wings. This indicates that central strieks provide more precise forward observations than thinly quoted wing strikes.
+
+### Limitations
+The synthetic crossing diagnostic is currently price-only. It does not include:
+* matched optiona and feature quantities;
+* contract-size conversion;
+* fees and slippage;
+* margin and execution risk;
+
+A crossing is therefore a *price cross* rather than an arbitrage.  
 
 ## Unit Testing & Verification
 
