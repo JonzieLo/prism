@@ -41,6 +41,8 @@ class DeltaRow:
     net_transaction_delta: float
     diagnostic: bool
     issue_codes: tuple[str,...]
+    bid_delta: float | None = None
+    ask_delta: float | None = None
 
 
 async def fetch_snapshot(
@@ -99,6 +101,33 @@ def build_delta_rows(
             bachelier_greeks = bachelier.greeks(forward, quote.strike, quote.tau, normal_vol, rate, quote.option_type)
             cash_price = black76.price(forward, quote.strike, quote.tau, lognormal_vol, rate, quote.option_type)
             inverse = from_forward_greeks(cash_price, black76_greeks, quote.index_price, forward)
+
+            bid_delta = None
+            ask_delta = None
+            if (
+                quote.bid_coin is not None 
+                and quote.ask_coin is not None
+                and quote.bid_coin > 0.0 
+                and quote.ask_coin > 0.0
+            ):
+                try:
+                    bid_usd = quote.index_price * quote.bid_coin
+                    ask_usd = quote.index_price * quote.ask_coin
+
+                    bid_iv = black76.implied_vol(bid_usd, forward, quote.strike, quote.tau, rate, quote.option_type)
+                    ask_iv = black76.implied_vol(ask_usd, forward, quote.strike, quote.tau, rate, quote.option_type)
+
+                    bid_greeks = black76.greeks(forward, quote.strike, quote.tau, bid_iv, rate, quote.option_type)
+                    ask_greeks = black76.greeks(forward, quote.strike, quote.tau, ask_iv, rate, quote.option_type)
+
+                    bid_cash = black76.price(forward, quote.strike, quote.tau, bid_iv, rate, quote.option_type)
+                    ask_cash = black76.price(forward, quote.strike, quote.tau, ask_iv, rate, quote.option_type)
+
+                    bid_delta = from_forward_greeks(bid_cash, bid_greeks, quote.index_price, forward).traditional_spot_delta
+                    ask_delta = from_forward_greeks(ask_cash, ask_greeks, quote.index_price, forward).traditional_spot_delta
+                except ValueError:
+                    pass
+
         except ValueError as error:
             dropped.append((quote.instrument_name, str(error)))
             continue
@@ -115,6 +144,8 @@ def build_delta_rows(
                 net_transaction_delta=inverse.net_transaction_delta,
                 diagnostic=diagnostic,
                 issue_codes=issue_codes,
+                bid_delta=bid_delta,
+                ask_delta=ask_delta,
             )
         )
 
@@ -146,14 +177,24 @@ def plot_delta_rows(
     ex_traditional = np.array([r.traditional_delta for r in excluded_rows])
     ex_ntd = np.array([r.net_transaction_delta for r in excluded_rows])
 
-    mark_differences = [
-        abs(row.lognormal_vol - row.quote.deribit_mark_iv)
+    abs_diffs = [
+        (abs(row.lognormal_vol - row.quote.deribit_mark_iv), row.quote.instrument_name)
         for row in rows
         if row.quote.deribit_mark_iv is not None
     ]
-    median_mark_difference = (
-        float(np.median(mark_differences)) if mark_differences else math.nan
-    )
+
+    if abs_diffs:
+        diff_values = [d[0] for d in abs_diffs]
+        max_diff, max_inst = max(abs_diffs, key=lambda x: x[0])
+        p95_diff = float(np.percentile(diff_values, 95))
+        median_diff = float(np.median(diff_values))
+        iv_summary = (
+            f"median |own − mark IV|={median_diff:.4f} | "
+            f"p95={p95_diff:.4f} | max={max_diff:.4f} ({max_inst})"
+        )
+    else:
+        iv_summary = "median |own − mark IV|=n/a"
+
     first = rows[0].quote
 
     with plt.rc_context(
@@ -213,6 +254,17 @@ def plot_delta_rows(
             ls="-.",
             label="Price-matched Bachelier delta",
         )
+
+        for r in rows:
+            if r.bid_delta is not None and r.ask_delta is not None:
+                top.vlines(
+                    r.quote.strike,
+                    r.bid_delta,
+                    r.ask_delta,
+                    color="#BAB9B4",
+                    linewidth=1.2,
+                    alpha=0.75,
+                )
 
         if len(ex_strikes) > 0:
             top.scatter(
@@ -296,11 +348,7 @@ def plot_delta_rows(
             x=0.01,
             ha="left",
         )
-        cross_check = (
-            f"{median_mark_difference:.4f}"
-            if math.isfinite(median_mark_difference)
-            else "n/a"
-        )
+
         figure.text(
             0.01,
             -0.02,
@@ -308,7 +356,7 @@ def plot_delta_rows(
                 f"Expiry {expiry} | X={first.index_price:,.2f} | "
                 f"F={model_forward:,.2f} | kept={len(rows)} | "
                 f"excluded={len(excluded_rows)} | dropped={dropped_count} | "
-                f"median |own IV − mark IV|={cross_check}"
+                f"{iv_summary}"
             ),
             fontsize=8.5,
             color="#7A7974",
@@ -383,6 +431,60 @@ def main() -> None:
         )
     rows, dropped = build_delta_rows(selected, args.steps, forward_by_expiry,)
     model_forward = forward_by_expiry[selected_key]
+    sorted_quotes = sorted(selected, key=lambda quote: quote.strike)
+    for lower, higher in zip(sorted_quotes, sorted_quotes[1:]):
+        if (
+            lower.mid_coin is not None
+            and higher.mid_coin is not None
+            and higher.mid_coin > lower.mid_coin
+        ):
+            print(
+                f"midpoint monotonicity warning: {lower.instrument_name} ({lower.mid_coin:.4f}) < "
+                f"{higher.instrument_name} ({higher.mid_coin:.4f})"
+            )
+        if (
+            lower.ask_coin is not None
+            and higher.bid_coin is not None
+            and higher.bid_coin > lower.ask_coin
+        ):
+            print(
+                f"executable call monotonicity violation: Sell {higher.instrument_name} @ {higher.bid_coin:.4f} > "
+                f"Buy {lower.instrument_name} @ {lower.ask_coin:.4f}"
+            )
+    print("\n--- STRIKE-LEVEL DIAGNOSTIC ($200k - $240k) ---")
+    print(
+        f"{'Instrument':<24} {'Strike':<8} {'Bid':<8} {'Ask':<8} {'Mid':<8} "
+        f"{'RelSpread':<10} {'OwnIV':<8} {'MarkIV':<8} {'Delta':<8} {'NTD':<8} {'OI':<8} {'Vol':<8}"
+    )
+    for row in rows:
+        quote = row.quote
+        if 200_000 <= quote.strike <= 240_000:
+            spread = (
+                quote.ask_coin - quote.bid_coin
+                if quote.bid_coin is not None and quote.ask_coin is not None
+                else None
+            )
+            relative_spread = (
+                spread / quote.mid_coin
+                if spread is not None and quote.mid_coin is not None and quote.mid_coin > 0.0
+                else None
+            )
+            bid_str = f"{quote.bid_coin:.4f}" if quote.bid_coin is not None else "N/A"
+            ask_str = f"{quote.ask_coin:.4f}" if quote.ask_coin is not None else "N/A"
+            mid_str = f"{quote.mid_coin:.4f}" if quote.mid_coin is not None else "N/A"
+            rel_str = f"{relative_spread:.4f}" if relative_spread is not None else "N/A"
+            mark_str = f"{quote.deribit_mark_iv:.4f}" if quote.deribit_mark_iv is not None else "N/A"
+            oi_str = f"{quote.open_interest:.0f}" if quote.open_interest is not None else "0"
+            vol_str = f"{quote.volume:.0f}" if quote.volume is not None else "0"
+
+            print(
+                f"{quote.instrument_name:<24} {quote.strike:<8.0f} "
+                f"{bid_str:<8} {ask_str:<8} {mid_str:<8} "
+                f"{rel_str:<10} {row.lognormal_vol:<8.4f} {mark_str:<8} "
+                f"{row.traditional_delta:<8.4f} {row.net_transaction_delta:<8.4f} "
+                f"{oi_str:<8} {vol_str:<8}"
+            )
+
     plot_delta_rows(
         rows,
         Path(args.output),
