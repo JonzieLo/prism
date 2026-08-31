@@ -24,6 +24,7 @@ from deribit.pricing import (
     Black76Model,
     from_forward_greeks,
 )
+from deribit.hygiene import Use, evaluate_leg
 from deribit.store import SnapshotStore
 from deribit.ws_client import DeribitWSClient
 
@@ -38,6 +39,8 @@ class DeltaRow:
     binomial_delta: float
     bachelier_delta: float
     net_transaction_delta: float
+    diagnostic: bool
+    issue_codes: tuple[str,...]
 
 
 async def fetch_snapshot(
@@ -70,6 +73,12 @@ def build_delta_rows(
         if mid_usd is None:
             dropped.append((quote.instrument_name, "no two-sided midpoint"))
             continue
+        
+        quote_issues = evaluate_leg(quote, quote.option_type)
+        diagnostic = not any(
+            Use.DIAGNOSTIC_MID in issue.blocks for issue in quote_issues
+        )
+        issue_codes = tuple(issue.code.value for issue in quote_issues)
 
         try:
             key = (
@@ -83,73 +92,13 @@ def build_delta_rows(
                 continue
 
             rate = math.log(forward / quote.index_price) / quote.tau
-            lognormal_vol = black76.implied_vol(
-                mid_usd,
-                # quote.forward,
-                forward,
-                quote.strike,
-                quote.tau,
-                # quote.rate,
-                rate,
-                quote.option_type,
-            )
-            normal_vol = bachelier.implied_vol(
-                mid_usd,
-                # quote.forward,
-                forward,
-                quote.strike,
-                quote.tau,
-                # quote.rate,
-                rate,
-                quote.option_type,
-            )
-            black76_greeks = black76.greeks(
-                # quote.forward,
-                forward,
-                quote.strike,
-                quote.tau,
-                lognormal_vol,
-                # quote.rate,
-                rate,
-                quote.option_type,
-            )
-            binomial_greeks = binomial.greeks(
-                # quote.forward,
-                forward,
-                quote.strike,
-                quote.tau,
-                lognormal_vol,
-                # quote.rate,
-                rate,
-                quote.option_type,
-            )
-            bachelier_greeks = bachelier.greeks(
-                # quote.forward,
-                forward,
-                quote.strike,
-                quote.tau,
-                normal_vol,
-                # quote.rate,
-                rate,
-                quote.option_type,
-            )
-            cash_price = black76.price(
-                # quote.forward,
-                forward,
-                quote.strike,
-                quote.tau,
-                lognormal_vol,
-                # quote.rate,
-                rate,
-                quote.option_type,
-            )
-            inverse = from_forward_greeks(
-                cash_price,
-                black76_greeks,
-                quote.index_price,
-                # quote.forward,
-                forward,
-            )
+            lognormal_vol = black76.implied_vol(mid_usd, forward, quote.strike, quote.tau, rate, quote.option_type)
+            normal_vol = bachelier.implied_vol(mid_usd, forward, quote.strike, quote.tau, rate, quote.option_type)
+            black76_greeks = black76.greeks(forward, quote.strike, quote.tau, lognormal_vol, rate, quote.option_type)
+            binomial_greeks = binomial.greeks(forward, quote.strike, quote.tau, lognormal_vol, rate, quote.option_type)
+            bachelier_greeks = bachelier.greeks(forward, quote.strike, quote.tau, normal_vol, rate, quote.option_type)
+            cash_price = black76.price(forward, quote.strike, quote.tau, lognormal_vol, rate, quote.option_type)
+            inverse = from_forward_greeks(cash_price, black76_greeks, quote.index_price, forward)
         except ValueError as error:
             dropped.append((quote.instrument_name, str(error)))
             continue
@@ -164,6 +113,8 @@ def build_delta_rows(
                 binomial_delta=binomial_greeks.delta,
                 bachelier_delta=bachelier_greeks.delta,
                 net_transaction_delta=inverse.net_transaction_delta,
+                diagnostic=diagnostic,
+                issue_codes=issue_codes,
             )
         )
 
@@ -176,16 +127,24 @@ def plot_delta_rows(
     snapshot_id: int | str,
     dropped_count: int,
     steps: int,
+    model_forward: float,
 ) -> None:
     if not rows:
         raise ValueError("no valid option rows remain after IV inversion")
 
-    strikes = np.array([row.quote.strike for row in rows])
-    traditional = np.array([row.traditional_delta for row in rows])
-    black76 = np.array([row.black76_delta for row in rows])
-    binomial = np.array([row.binomial_delta for row in rows])
-    bachelier = np.array([row.bachelier_delta for row in rows])
-    ntd = np.array([row.net_transaction_delta for row in rows])
+    eligible_rows = [r for r in rows if r.diagnostic]
+    excluded_rows = [r for r in rows if not r.diagnostic]
+
+    el_strikes = np.array([r.quote.strike for r in eligible_rows])
+    el_traditional = np.array([r.traditional_delta for r in eligible_rows])
+    el_black76 = np.array([r.black76_delta for r in eligible_rows])
+    el_binomial = np.array([r.binomial_delta for r in eligible_rows])
+    el_bachelier = np.array([r.bachelier_delta for r in eligible_rows])
+    el_ntd = np.array([r.net_transaction_delta for r in eligible_rows])
+
+    ex_strikes = np.array([r.quote.strike for r in excluded_rows])
+    ex_traditional = np.array([r.traditional_delta for r in excluded_rows])
+    ex_ntd = np.array([r.net_transaction_delta for r in excluded_rows])
 
     mark_differences = [
         abs(row.lognormal_vol - row.quote.deribit_mark_iv)
@@ -221,8 +180,8 @@ def plot_delta_rows(
         )
 
         top.plot(
-            strikes,
-            traditional,
+            el_strikes,
+            el_traditional,
             color="#20808D",
             marker="o",
             markersize=3,
@@ -230,8 +189,8 @@ def plot_delta_rows(
             label="Spot-equivalent traditional delta",
         )
         top.plot(
-            strikes,
-            black76,
+            el_strikes,
+            el_black76,
             color="#A84B2F",
             marker="s",
             markersize=3,
@@ -240,20 +199,32 @@ def plot_delta_rows(
             label="Black–76 forward delta",
         )
         top.plot(
-            strikes,
-            binomial,
+            el_strikes,
+            el_binomial,
             color="#1B474D",
             lw=1.4,
             label=f"CRR forward delta ({steps} steps)",
         )
         top.plot(
-            strikes,
-            bachelier,
+            el_strikes,
+            el_bachelier,
             color="#7A39BB",
             lw=1.8,
             ls="-.",
             label="Price-matched Bachelier delta",
         )
+
+        if len(ex_strikes) > 0:
+            top.scatter(
+                ex_strikes,
+                ex_traditional,
+                color="#A13544",
+                marker="x",
+                s=40,
+                zorder=4,
+                label="Excluded leg midpoint",
+            )
+
         top.set_ylabel("Delta")
         top.set_title(
             "Traditional deltas use market-mid implied volatility\n"
@@ -263,14 +234,26 @@ def plot_delta_rows(
         top.legend(frameon=False, ncol=2, loc="best")
 
         bottom.plot(
-            strikes,
-            ntd,
+            el_strikes,
+            el_ntd,
             color="#DA7101",
             marker="o",
             markersize=3,
             lw=2.4,
             label="Inverse Net Transaction Delta",
         )
+
+        if len(ex_strikes) > 0:
+            bottom.scatter(
+                ex_strikes,
+                ex_ntd,
+                color="#A13544",
+                marker="x",
+                s=40,
+                zorder=4,
+                label="Excluded leg midpoint",
+            )
+
         bottom.axhline(0.0, color="#7A7974", lw=0.8)
         bottom.set_xlabel("Strike K (USD)")
         bottom.set_ylabel("Base-coin exposure")
@@ -283,7 +266,6 @@ def plot_delta_rows(
         bottom.legend(frameon=False, loc="best")
 
         for axis in (top, bottom):
-            # Mark Spot/Index Price
             axis.axvline(
                 first.index_price, 
                 color="#7A7974", 
@@ -291,13 +273,12 @@ def plot_delta_rows(
                 lw=1.2, 
                 label=f"Index X (${first.index_price:,.0f})"
             )
-            # Mark Forward Price
             axis.axvline(
-                first.api_forward, 
+                model_forward, 
                 color="#28251D", 
                 ls="--", 
                 lw=1.2, 
-                label=f"Forward F (${first.api_forward:,.0f})"
+                label=f"Forward F (${model_forward:,.0f})"
             )
             axis.grid(axis="y", color="#D4D1CA", lw=0.8, alpha=0.7)
             axis.grid(axis="x", visible=False)
@@ -325,9 +306,9 @@ def plot_delta_rows(
             -0.02,
             (
                 f"Expiry {expiry} | X={first.index_price:,.2f} | "
-                f"F={first.api_forward:,.2f} | kept={len(rows)} | "
-                f"dropped={dropped_count} | median |own IV − mark IV|="
-                f"{cross_check}"
+                f"F={model_forward:,.2f} | kept={len(rows)} | "
+                f"excluded={len(excluded_rows)} | dropped={dropped_count} | "
+                f"median |own IV − mark IV|={cross_check}"
             ),
             fontsize=8.5,
             color="#7A7974",
@@ -401,12 +382,14 @@ def main() -> None:
             "Selected expiry has no diagnostic-eligible options-implied forward."
         )
     rows, dropped = build_delta_rows(selected, args.steps, forward_by_expiry,)
+    model_forward = forward_by_expiry[selected_key]
     plot_delta_rows(
         rows,
         Path(args.output),
         snapshot_id,
         len(dropped),
         args.steps,
+        model_forward,
     )
 
     print(
