@@ -1,4 +1,4 @@
-.PHONY: all test integration snapshot figure forwards forward-curve segmentation
+.PHONY: all test integration snapshot figure forwards forward_curve segmentation
 
 PYTHON ?= python3
 # PYTHON := .venv/bin/python
@@ -6,7 +6,7 @@ DB ?= snapshots.db
 OUTPUT ?= figs/delta_vs_strike.png
 FORWARD_OUTPUT ?= figs/forward_curve.png
 
-all: test integration snapshot forwards segmentation
+all: test integration snapshot forwards forward_curve segmentation
 
 test:
 	$(PYTHON) -m pytest -q

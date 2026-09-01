@@ -298,21 +298,37 @@ class LiquidityGroupMetrics:
 
 def build_liquidity_segmentation(
     evaluated_pairs: Sequence[EvaluatedPair],
+    expiry_forwards: Sequence[ExpiryForward],
 ) -> tuple[LiquidityGroupMetrics, ...]:
-    """Segment all pairs cross-sectionally by snapshot-relative liquidity groups."""
+    """Segment all pairs cross-sectionally by snapshot-relative liquidity groups with residuals."""
     if not evaluated_pairs:
         return ()
 
+    forward_by_expiry = {
+        (
+            expiry.underlying_index,
+            expiry.expiration_timestamp,
+        ): expiry.implied_forward
+        for expiry in expiry_forwards
+    }
+
+    missing_volume = []
     zero_vol = []
     pos_vol = []
     for item in evaluated_pairs:
         vol = observed_pair_sum(item.pair.call.volume, item.pair.put.volume)
-        if vol is None or vol == 0.0:
+        if vol is None:
+            missing_volume.append(item)
+        elif vol == 0.0:
             zero_vol.append(item)
         else:
             pos_vol.append((vol, item))
 
-    groups = [("Zero Volume", zero_vol)]
+    groups = []
+    if missing_volume:
+        groups.append(("Missing Volume Data", missing_volume))
+    if zero_vol:
+        groups.append(("Zero Observed Volume", zero_vol))
 
     if pos_vol:
         pos_vol.sort(key=lambda x: x[0])
@@ -335,16 +351,20 @@ def build_liquidity_segmentation(
         if count == 0:
             continue
         eligible = [item for item in items if item.diagnostic_eligible]
-        
+
         spreads = [
             s for item in items
             for s in (relative_spread(item.pair.call), relative_spread(item.pair.put))
             if s is not None
         ]
-        residuals = [
-            abs(item.point.forward_mid - item.pair.call.index_price) # baseline or ref
-            for item in eligible if item.point.forward_mid is not None
-        ]
+
+        residuals = []
+        for item in eligible:
+            key = (item.pair.underlying_index, item.pair.expiration_timestamp)
+            ref_fwd = forward_by_expiry.get(key)
+            if ref_fwd is not None and item.point.forward_mid is not None:
+                residuals.append(abs(item.point.forward_mid - ref_fwd))
+
         widths = [
             item.point.synthetic_buy_forward - item.point.synthetic_sell_forward
             for item in items

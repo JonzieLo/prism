@@ -7,7 +7,7 @@ from pathlib import Path
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
-from benchmarks.chain_report import format_accounting_report
+from benchmarks.chain_report import format_accounting_report, format_expiry_comparison_table
 from deribit.config import SnapshotUniversalConfig
 from deribit.forward_curve import *
 from deribit.forwards import BasisStatus
@@ -315,6 +315,24 @@ def plot_forward_curve(
         figure.savefig(output, dpi=180, bbox_inches="tight")
         plt.close(figure)
 
+
+def print_snapshot_provenance(snapshot: dict) -> None:
+    opt_ns = snapshot.get("options", {}).get("received_at_ns")
+    fut_ns = snapshot.get("futures", {}).get("received_at_ns")
+    idx_ns = snapshot.get("index", {}).get("received_at_ns")
+
+    print("\n=== SNAPSHOT PROVENANCE & TIMING ===")
+    if opt_ns and fut_ns and idx_ns:
+        diff_ms = (fut_ns - opt_ns) / 1_000_000.0
+        window_ms = (max(opt_ns, fut_ns, idx_ns) - min(opt_ns, fut_ns, idx_ns)) / 1_000_000.0
+        print(f"Options Summary Received: {opt_ns}")
+        print(f"Futures Summary Received: {fut_ns}")
+        print(f"Options-to-Futures Delta: {diff_ms:+.2f} ms")
+        print(f"Total Snapshot Capture Window: {window_ms:.2f} ms")
+    else:
+        print("Timestamp provenance metadata incomplete in snapshot payload.")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build and plot an inverse-option forward curve."
@@ -351,7 +369,9 @@ if __name__ == "__main__":
         raise SystemExit(f"Snapshot {snapshot_id} does not exist")
 
     result = build_forward_curve(snapshot)
+    print_snapshot_provenance(snapshot)
     print("\n" + format_accounting_report(result))
+    print("\n" + format_expiry_comparison_table(result))
 
     print("\n=== MONEYNESS SEGMENTATION (ALL EXPIRIES) ===")
     for expiry_forward in result.expiry_forwards:
@@ -362,7 +382,7 @@ if __name__ == "__main__":
         print(f"\nExpiry: {expiry_forward.underlying_index}")
         print(format_moneyness_table(metrics))
 
-    liq_metrics = build_liquidity_segmentation(result.evaluated_pairs)
+    liq_metrics = build_liquidity_segmentation(result.evaluated_pairs, result.expiry_forwards)
     if liq_metrics:
         print("\n=== LIQUIDITY GROUP SEGMENTATION ===")
         print(
