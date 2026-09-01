@@ -7,11 +7,11 @@ from pathlib import Path
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
-
+from benchmarks.chain_report import format_accounting_report
 from deribit.config import SnapshotUniversalConfig
 from deribit.forward_curve import *
 from deribit.forwards import BasisStatus
-from deribit.segmentation import build_moneyness_segmentation, format_moneyness_table
+from deribit.segmentation import build_liquidity_segmentation, format_moneyness_table, build_moneyness_segmentation
 from deribit.store import SnapshotStore
 from deribit.ws_client import DeribitWSClient
 
@@ -332,32 +332,58 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
     store = SnapshotStore(args.db)
+
     if args.fetch:
         snapshot_id = asyncio.run(
             fetch_snapshot(store, args.currency, args.testnet)
         )
+        snapshot = store.load_snapshot(snapshot_id)
     elif args.snapshot_id is not None:
         snapshot_id = args.snapshot_id
+        snapshot = store.load_snapshot(snapshot_id)
     else:
         snapshot_id = store.latest_snapshot_id(args.currency)
         if snapshot_id is None:
             raise SystemExit("No stored snapshot; use --fetch or --snapshot-id")
+        snapshot = store.load_snapshot(snapshot_id)
 
-    snapshot = store.load_snapshot(snapshot_id)
     if snapshot is None:
         raise SystemExit(f"Snapshot {snapshot_id} does not exist")
 
     result = build_forward_curve(snapshot)
-    if result.expiry_forwards:
-        target_expiry = result.expiry_forwards[0]  # or selected diagnostic expiry
+    print("\n" + format_accounting_report(result))
+
+    print("\n=== MONEYNESS SEGMENTATION (ALL EXPIRIES) ===")
+    for expiry_forward in result.expiry_forwards:
         metrics = build_moneyness_segmentation(
-            result.evaluated_pairs, target_expiry
+            result.evaluated_pairs,
+            expiry_forward,
         )
-        print("\n" + format_moneyness_table(metrics))
+        print(f"\nExpiry: {expiry_forward.underlying_index}")
+        print(format_moneyness_table(metrics))
+
+    liq_metrics = build_liquidity_segmentation(result.evaluated_pairs)
+    if liq_metrics:
+        print("\n=== LIQUIDITY GROUP SEGMENTATION ===")
+        print(
+            f"{'Group':<22} {'Pairs':<6} {'Elig%':<8} {'MedSprd':<9} "
+            f"{'MedResUSD':<10} {'MedSynthWidth':<12}"
+        )
+        print("-" * 70)
+        for lm in liq_metrics:
+            sprd_str = f"{lm.median_relative_spread:.2%}" if lm.median_relative_spread else "N/A"
+            res_str = f"{lm.median_abs_parity_residual:.2f}" if lm.median_abs_parity_residual else "N/A"
+            width_str = f"{lm.median_synthetic_interval_width:.2f}" if lm.median_synthetic_interval_width else "N/A"
+            print(
+                f"{lm.group_name:<22} {lm.pair_count:<6} "
+                f"{lm.midpoint_eligible_fraction:<8.2%} {sprd_str:<9} "
+                f"{res_str:<10} {width_str:<12}"
+            )
+
     plot_forward_curve(
         result,
         Path(args.output),
         snapshot_id=snapshot_id,
         diagnostic_expiry=args.expiry,
     )
-    print(f"\noutput: {args.output}")
+    print(f"\nFigure saved to: {args.output}")

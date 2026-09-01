@@ -157,8 +157,8 @@ def build_moneyness_segmentation(
     metrics = []
     for band in ORDERED_BANDS:
         items = grouped[band]
-        total = len(items)
-        if total == 0:
+        bucket_pair_count = len(items)
+        if bucket_pair_count == 0:
             metrics.append(empty_bucket_metrics(band))
             continue
 
@@ -203,20 +203,20 @@ def build_moneyness_segmentation(
 
         # Liquidity
         open_interests = [
-            total
+            val
             for item in items
             if (
-                total := observed_pair_sum(
+                val := observed_pair_sum(
                     item.pair.call.open_interest, item.pair.put.open_interest
                 )
             )
             is not None
         ]
         volumes = [
-            total
+            val
             for item in items
             if (
-                total := observed_pair_sum(
+                val := observed_pair_sum(
                     item.pair.call.volume, item.pair.put.volume
                 )
             )
@@ -226,11 +226,11 @@ def build_moneyness_segmentation(
         metrics.append(
             MoneynessBucketMetrics(
                 band=band,
-                pair_count=total,
+                pair_count=bucket_pair_count,
                 eligible_pair_count=eligible_count,
-                midpoint_eligible_fraction=eligible_count / total,
-                missing_bid_fraction=missing_bid_count / total,
-                unusable_bid_fraction=unusable_bid_count / total,
+                midpoint_eligible_fraction=eligible_count / bucket_pair_count,
+                missing_bid_fraction=missing_bid_count / bucket_pair_count,
+                unusable_bid_fraction=unusable_bid_count / bucket_pair_count,
                 call_spread_count=len(call_spreads),
                 median_call_relative_spread=float(np.median(call_spreads)) if call_spreads else None,
                 put_spread_count=len(put_spreads),
@@ -287,3 +287,79 @@ def format_moneyness_table(
     return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class LiquidityGroupMetrics:
+    group_name: str
+    pair_count: int
+    midpoint_eligible_fraction: float
+    median_relative_spread: float | None
+    median_abs_parity_residual: float | None
+    median_synthetic_interval_width: float | None
+
+def build_liquidity_segmentation(
+    evaluated_pairs: Sequence[EvaluatedPair],
+) -> tuple[LiquidityGroupMetrics, ...]:
+    """Segment all pairs cross-sectionally by snapshot-relative liquidity groups."""
+    if not evaluated_pairs:
+        return ()
+
+    zero_vol = []
+    pos_vol = []
+    for item in evaluated_pairs:
+        vol = observed_pair_sum(item.pair.call.volume, item.pair.put.volume)
+        if vol is None or vol == 0.0:
+            zero_vol.append(item)
+        else:
+            pos_vol.append((vol, item))
+
+    groups = [("Zero Volume", zero_vol)]
+
+    if pos_vol:
+        pos_vol.sort(key=lambda x: x[0])
+        vols = [x[0] for x in pos_vol]
+        q25, q75 = np.quantile(vols, [0.25, 0.75])
+
+        q1 = [item for v, item in pos_vol if v <= q25]
+        q2_3 = [item for v, item in pos_vol if q25 < v <= q75]
+        q4 = [item for v, item in pos_vol if v > q75]
+
+        groups.extend([
+            ("Lower Quartile Vol", q1),
+            ("Middle 50% Vol", q2_3),
+            ("Upper Quartile Vol", q4),
+        ])
+
+    metrics = []
+    for name, items in groups:
+        count = len(items)
+        if count == 0:
+            continue
+        eligible = [item for item in items if item.diagnostic_eligible]
+        
+        spreads = [
+            s for item in items
+            for s in (relative_spread(item.pair.call), relative_spread(item.pair.put))
+            if s is not None
+        ]
+        residuals = [
+            abs(item.point.forward_mid - item.pair.call.index_price) # baseline or ref
+            for item in eligible if item.point.forward_mid is not None
+        ]
+        widths = [
+            item.point.synthetic_buy_forward - item.point.synthetic_sell_forward
+            for item in items
+            if item.point.synthetic_buy_forward is not None and item.point.synthetic_sell_forward is not None
+        ]
+
+        metrics.append(
+            LiquidityGroupMetrics(
+                group_name=name,
+                pair_count=count,
+                midpoint_eligible_fraction=len(eligible) / count,
+                median_relative_spread=float(np.median(spreads)) if spreads else None,
+                median_abs_parity_residual=float(np.median(residuals)) if residuals else None,
+                median_synthetic_interval_width=float(np.median(widths)) if widths else None,
+            )
+        )
+
+    return tuple(metrics)

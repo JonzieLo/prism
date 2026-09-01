@@ -140,3 +140,52 @@ def test_signed_residuals_calculation():
 
     assert near_fwd.median_abs_internal_residual_usd == pytest.approx(100.0)
     assert near_fwd.internal_residual_mad_usd == pytest.approx(100.0)
+
+def test_zero_volume_does_not_overwrite_bucket_pair_count():
+    # Construct 3 evaluated pairs with volume = 0.0
+    fwd = ExpiryForward(
+        expiration_timestamp=1000,
+        underlying_index="BTC",
+        implied_forward=70000.0,
+        dispersion_mad=0.0,
+        dispersion_iqr=0.0,
+        pair_count=3,
+        best_synthetic_buy=70000.0,
+        best_synthetic_buy_strike=70000.0,
+        best_synthetic_sell=70000.0,
+        best_synthetic_sell_strike=70000.0,
+    )
+
+    def make_zero_vol_pair(strike):
+        call = OptionQuote(
+            source_row_id=1, instrument_name="C", option_type="call", strike=strike,
+            expiration_timestamp=1000, underlying_index="BTC", settlement_currency="BTC",
+            contract_size=1.0, index_price=70000.0, tau=0.1, bid_coin=0.01, ask_coin=0.02,
+            bid_amount=1.0, ask_amount=1.0, mark_coin=0.01, deribit_mark_iv=0.6,
+            open_interest=10.0, volume=0.0, last_coin=0.01
+        )
+        put = OptionQuote(
+            source_row_id=2, instrument_name="P", option_type="put", strike=strike,
+            expiration_timestamp=1000, underlying_index="BTC", settlement_currency="BTC",
+            contract_size=1.0, index_price=70000.0, tau=0.1, bid_coin=0.01, ask_coin=0.02,
+            bid_amount=1.0, ask_amount=1.0, mark_coin=0.01, deribit_mark_iv=0.6,
+            open_interest=10.0, volume=0.0, last_coin=0.01
+        )
+        point = ParityPoint(1000, "BTC", strike, 70000.0, 70100.0, 69900.0, 1.0, 1.0)
+        return EvaluatedPair(
+            pair=type("Pair", (), {
+                "underlying_index": "BTC", "expiration_timestamp": 1000,
+                "strike": strike, "call": call, "put": put
+            })(),
+            point=point,
+            issues=(),
+        )
+
+    evaluated_pairs = [make_zero_vol_pair(70000.0) for _ in range(3)]
+    metrics = build_moneyness_segmentation(evaluated_pairs, fwd)
+    near = next(m for m in metrics if m.band == MoneynessBand.NEAR_FORWARD)
+
+    assert near.pair_count == 3
+    assert near.eligible_pair_count == 3
+    assert near.midpoint_eligible_fraction == 1.0
+    assert near.median_volume == 0.0

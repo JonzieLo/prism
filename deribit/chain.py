@@ -97,6 +97,7 @@ def option_chain_report_from_snapshot(snapshot: dict[str, Any],) -> tuple[list[O
         spec = specs.get(instrument_name)
         if spec is None:
             issues.append(ChainIssue(source_row_id, instrument_name, "missing_instrument_spec"))
+            continue
 
         expiration = spec.get("expiration_timestamp")
         strike = spec.get("strike")

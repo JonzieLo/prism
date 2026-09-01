@@ -388,7 +388,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
+if __name__ == "__main__":
     args = parse_args()
     store = SnapshotStore(args.db)
 
@@ -403,12 +403,11 @@ def main() -> None:
     else:
         snapshot_id = store.latest_snapshot_id(args.currency)
         if snapshot_id is None:
-            raise SystemExit(
-                "No stored snapshot; use --fetch or --snapshot-id"
-            )
+            raise SystemExit("No stored snapshot; use --fetch or --snapshot-id")
         snapshot = store.load_snapshot(snapshot_id)
+
     if snapshot is None:
-        raise SystemExit(f"Nnapshot {snapshot_id} does not exist")
+        raise SystemExit(f"Snapshot {snapshot_id} does not exist")
 
     curve_result = build_forward_curve(snapshot)
     forward_by_expiry = {
@@ -418,6 +417,7 @@ def main() -> None:
         ): expiry_forward.implied_forward
         for expiry_forward in curve_result.expiry_forwards
     }
+
     chain = option_chain_from_snapshot(snapshot)
     selected = select_expiry(chain, args.option_type, args.expiry)
 
@@ -427,64 +427,17 @@ def main() -> None:
     )
     if selected_key not in forward_by_expiry:
         raise SystemExit(
-            "Selected expiry has no diagnostic-eligible options-implied forward."
+            "Selected expiry has no diagnostic-eligible "
+            "options-implied forward"
         )
-    rows, dropped = build_delta_rows(selected, args.steps, forward_by_expiry,)
-    model_forward = forward_by_expiry[selected_key]
-    sorted_quotes = sorted(selected, key=lambda quote: quote.strike)
-    for lower, higher in zip(sorted_quotes, sorted_quotes[1:]):
-        if (
-            lower.mid_coin is not None
-            and higher.mid_coin is not None
-            and higher.mid_coin > lower.mid_coin
-        ):
-            print(
-                f"midpoint monotonicity warning: {lower.instrument_name} ({lower.mid_coin:.4f}) < "
-                f"{higher.instrument_name} ({higher.mid_coin:.4f})"
-            )
-        if (
-            lower.ask_coin is not None
-            and higher.bid_coin is not None
-            and higher.bid_coin > lower.ask_coin
-        ):
-            print(
-                f"executable call monotonicity violation: Sell {higher.instrument_name} @ {higher.bid_coin:.4f} > "
-                f"Buy {lower.instrument_name} @ {lower.ask_coin:.4f}"
-            )
-    print("\n--- STRIKE-LEVEL DIAGNOSTIC ($200k - $240k) ---")
-    print(
-        f"{'Instrument':<24} {'Strike':<8} {'Bid':<8} {'Ask':<8} {'Mid':<8} "
-        f"{'RelSpread':<10} {'OwnIV':<8} {'MarkIV':<8} {'Delta':<8} {'NTD':<8} {'OI':<8} {'Vol':<8}"
+
+    rows, dropped = build_delta_rows(
+        selected,
+        args.steps,
+        forward_by_expiry,
     )
-    for row in rows:
-        quote = row.quote
-        if 200_000 <= quote.strike <= 240_000:
-            spread = (
-                quote.ask_coin - quote.bid_coin
-                if quote.bid_coin is not None and quote.ask_coin is not None
-                else None
-            )
-            relative_spread = (
-                spread / quote.mid_coin
-                if spread is not None and quote.mid_coin is not None and quote.mid_coin > 0.0
-                else None
-            )
-            bid_str = f"{quote.bid_coin:.4f}" if quote.bid_coin is not None else "N/A"
-            ask_str = f"{quote.ask_coin:.4f}" if quote.ask_coin is not None else "N/A"
-            mid_str = f"{quote.mid_coin:.4f}" if quote.mid_coin is not None else "N/A"
-            rel_str = f"{relative_spread:.4f}" if relative_spread is not None else "N/A"
-            mark_str = f"{quote.deribit_mark_iv:.4f}" if quote.deribit_mark_iv is not None else "N/A"
-            oi_str = f"{quote.open_interest:.0f}" if quote.open_interest is not None else "0"
-            vol_str = f"{quote.volume:.0f}" if quote.volume is not None else "0"
-
-            print(
-                f"{quote.instrument_name:<24} {quote.strike:<8.0f} "
-                f"{bid_str:<8} {ask_str:<8} {mid_str:<8} "
-                f"{rel_str:<10} {row.lognormal_vol:<8.4f} {mark_str:<8} "
-                f"{row.traditional_delta:<8.4f} {row.net_transaction_delta:<8.4f} "
-                f"{oi_str:<8} {vol_str:<8}"
-            )
-
+    
+    model_forward = forward_by_expiry[selected_key]
     plot_delta_rows(
         rows,
         Path(args.output),
@@ -500,7 +453,3 @@ def main() -> None:
     )
     for instrument_name, reason in dropped:
         print(f"dropped {instrument_name}: {reason}")
-
-
-if __name__ == "__main__":
-    main()
