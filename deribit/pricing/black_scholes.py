@@ -1,10 +1,8 @@
 import math
+import numpy as np
 from scipy.optimize import brentq
 from scipy.stats import norm
-from .base import CallPut, Greeks, OptionModel
-
-def parse_cp(cp: CallPut) -> int:
-    return 1 if cp == "call" else -1
+from .base import CallPut, Greeks, OptionModel, parse_cp
 
 class BlackScholesModel(OptionModel):
     def price( self, 
@@ -75,14 +73,17 @@ class BlackScholesModel(OptionModel):
         is_call = parse_cp(cp) == 1
         intrinsic = max(0.0, spot - strike * df) if is_call else max(0.0, strike * df - spot)
 
-        if price <= intrinsic:
+        if price < intrinsic:
             raise ValueError(f"Price {price} is below intrinsic value {intrinsic}")
+        if price == intrinsic:
+            return 0.0
         if price >= (spot if is_call else strike * df):
             raise ValueError(f"Price {price} exceeds maximum ceiling bound")
 
         def obj(v: float) -> float:
             return self.price(spot, strike, tau, v, rate, cp) - price
 
+        vol_output = None
         v = 0.30
         # Newton-Raphson
         for _ in range(20):
@@ -94,16 +95,32 @@ class BlackScholesModel(OptionModel):
 
             step = diff / v_greeks.vega
             if abs(step) < 1e-10:
-                return v - step
-
-            v = v - step
-            if v <= 0.0:
+                if v - step > 0:
+                    vol_output = v - step
                 break
         # Brent's Method
-        try:
-            return brentq(obj, 1e-6, 5.0, xtol=1e-10)
-        except Exception:
-            raise ValueError(f"Failed to converge implied vol for price {price}")
+        if vol_output == None:
+            try:
+                vol_output = brentq(obj, 1e-6, 5.0, xtol = 1e-10)
+            except Exception:
+                raise ValueError(f"Failed to converge implied vol for price {price}")
+            
+        if not math.isfinite(vol_output) or vol_output <= 0.0:
+            raise ValueError(f"Implied volatility solver produced invalid root: {vol_output}")
+
+        eps = float(np.finfo(float).eps)
+        tolerance = max(1e-9, 100.0 * eps * price)
+
+        repriced = self.price(spot, strike, tau, vol_output, rate, cp)
+        price_diff = abs(repriced - price)
+
+        if price_diff > tolerance:
+            raise ValueError(
+                f"Implied vol repricing check failed: market={price:.6f}, "
+                f"repriced={repriced:.6f}, diff={price_diff:.2e} > tol={tolerance:.2e}"
+            )
+
+        return vol_output
 
 
 class Black76Model(OptionModel):
@@ -176,6 +193,7 @@ class Black76Model(OptionModel):
         def obj(v: float) -> float:
             return self.price(forward, strike, tau, v, rate, cp) - price
 
+        vol_output = None
         v = 0.30
         # Newton-Raphson
         for _ in range(20):
@@ -186,14 +204,30 @@ class Black76Model(OptionModel):
                 break
             step = diff / v_greeks.vega
             if abs(step) < 1e-10:
-                return v - step
-
-            v = v - step
-            if v <= 0.0:
+                if v - step > 0:
+                    vol_output = v - step
                 break
 
         # Brent's Method
-        try:
-            return brentq(obj, 1e-6, 5.0, xtol = 1e-10)
-        except Exception:
-            return 0.0
+        if vol_output == None:
+            try:
+                return brentq(obj, 1e-6, 5.0, xtol = 1e-10)
+            except Exception:
+                raise ValueError(f"Failed to converge implied vol for price {price}")
+            
+        if not math.isfinite(vol_output) or vol_output <= 0.0:
+            raise ValueError(f"Implied volatility solver produced invalid root: {vol_output}")
+
+        eps = float(np.finfo(float).eps)
+        tolerance = max(1e-9, 100.0 * eps * price)
+
+        repriced = self.price(forward, strike, tau, vol_output, rate, cp)
+        price_diff = abs(repriced - price)
+
+        if price_diff > tolerance:
+            raise ValueError(
+                f"Implied vol repricing check failed: market={price:.6f}, "
+                f"repriced={repriced:.6f}, diff={price_diff:.2e} > tol={tolerance:.2e}"
+            )
+
+        return vol_output
