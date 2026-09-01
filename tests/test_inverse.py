@@ -2,6 +2,7 @@ import pytest
 
 from deribit.pricing import Black76Model, from_forward_greeks
 
+pytestmark = pytest.mark.pricing
 
 def test_inverse_greeks_obey_quotient_and_ntd_identities():
     index = 65_000.0

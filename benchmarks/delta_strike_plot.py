@@ -9,7 +9,9 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from collections.abc import Mapping
 
+from deribit.forward_curve import build_forward_curve
 from deribit.chain import (
     OptionQuote,
     option_chain_from_snapshot,
@@ -22,6 +24,7 @@ from deribit.pricing import (
     Black76Model,
     from_forward_greeks,
 )
+from deribit.hygiene import Use, evaluate_leg
 from deribit.store import SnapshotStore
 from deribit.ws_client import DeribitWSClient
 
@@ -36,6 +39,10 @@ class DeltaRow:
     binomial_delta: float
     bachelier_delta: float
     net_transaction_delta: float
+    diagnostic: bool
+    issue_codes: tuple[str,...]
+    bid_delta: float | None = None
+    ask_delta: float | None = None
 
 
 async def fetch_snapshot(
@@ -55,6 +62,7 @@ async def fetch_snapshot(
 def build_delta_rows(
     quotes: list[OptionQuote],
     steps: int,
+    forward_by_expiry: Mapping[tuple[str, int], float],
 ) -> tuple[list[DeltaRow], list[tuple[str, str]]]:
     black76 = Black76Model()
     bachelier = BachelierModel()
@@ -67,62 +75,59 @@ def build_delta_rows(
         if mid_usd is None:
             dropped.append((quote.instrument_name, "no two-sided midpoint"))
             continue
+        
+        quote_issues = evaluate_leg(quote, quote.option_type)
+        diagnostic = not any(
+            Use.DIAGNOSTIC_MID in issue.blocks for issue in quote_issues
+        )
+        issue_codes = tuple(issue.code.value for issue in quote_issues)
 
         try:
-            lognormal_vol = black76.implied_vol(
-                mid_usd,
-                quote.forward,
-                quote.strike,
-                quote.tau,
-                quote.rate,
-                quote.option_type,
+            key = (
+                quote.underlying_index,
+                quote.expiration_timestamp,
             )
-            normal_vol = bachelier.implied_vol(
-                mid_usd,
-                quote.forward,
-                quote.strike,
-                quote.tau,
-                quote.rate,
-                quote.option_type,
-            )
-            black76_greeks = black76.greeks(
-                quote.forward,
-                quote.strike,
-                quote.tau,
-                lognormal_vol,
-                quote.rate,
-                quote.option_type,
-            )
-            binomial_greeks = binomial.greeks(
-                quote.forward,
-                quote.strike,
-                quote.tau,
-                lognormal_vol,
-                quote.rate,
-                quote.option_type,
-            )
-            bachelier_greeks = bachelier.greeks(
-                quote.forward,
-                quote.strike,
-                quote.tau,
-                normal_vol,
-                quote.rate,
-                quote.option_type,
-            )
-            cash_price = black76.price(
-                quote.forward,
-                quote.strike,
-                quote.tau,
-                lognormal_vol,
-                quote.rate,
-                quote.option_type,
-            )
-            inverse = from_forward_greeks(
-                cash_price,
-                black76_greeks,
-                quote.index_price,
-                quote.forward,
-            )
+
+            forward = forward_by_expiry.get(key)
+            if forward is None:
+                dropped.append((quote.instrument_name,"No parity-derived forward for expiry",))
+                continue
+
+            rate = math.log(forward / quote.index_price) / quote.tau
+            lognormal_vol = black76.implied_vol(mid_usd, forward, quote.strike, quote.tau, rate, quote.option_type)
+            normal_vol = bachelier.implied_vol(mid_usd, forward, quote.strike, quote.tau, rate, quote.option_type)
+            black76_greeks = black76.greeks(forward, quote.strike, quote.tau, lognormal_vol, rate, quote.option_type)
+            binomial_greeks = binomial.greeks(forward, quote.strike, quote.tau, lognormal_vol, rate, quote.option_type)
+            bachelier_greeks = bachelier.greeks(forward, quote.strike, quote.tau, normal_vol, rate, quote.option_type)
+            cash_price = black76.price(forward, quote.strike, quote.tau, lognormal_vol, rate, quote.option_type)
+            inverse = from_forward_greeks(cash_price, black76_greeks, quote.index_price, forward)
+
+            bid_delta = None
+            ask_delta = None
+            if (
+                quote.bid_coin is not None 
+                and quote.ask_coin is not None
+                and quote.bid_coin > 0.0 
+                and quote.ask_coin > 0.0
+            ):
+                try:
+                    bid_usd = quote.index_price * quote.bid_coin
+                    ask_usd = quote.index_price * quote.ask_coin
+
+                    bid_iv = black76.implied_vol(bid_usd, forward, quote.strike, quote.tau, rate, quote.option_type)
+                    ask_iv = black76.implied_vol(ask_usd, forward, quote.strike, quote.tau, rate, quote.option_type)
+
+                    bid_greeks = black76.greeks(forward, quote.strike, quote.tau, bid_iv, rate, quote.option_type)
+                    ask_greeks = black76.greeks(forward, quote.strike, quote.tau, ask_iv, rate, quote.option_type)
+
+                    bid_cash = black76.price(forward, quote.strike, quote.tau, bid_iv, rate, quote.option_type)
+                    ask_cash = black76.price(forward, quote.strike, quote.tau, ask_iv, rate, quote.option_type)
+
+                    bid_delta = from_forward_greeks(bid_cash, bid_greeks, quote.index_price, forward).traditional_spot_delta
+                    ask_delta = from_forward_greeks(ask_cash, ask_greeks, quote.index_price, forward).traditional_spot_delta
+                except ValueError:
+                    pass
+
         except ValueError as error:
             dropped.append((quote.instrument_name, str(error)))
             continue
@@ -137,6 +142,10 @@ def build_delta_rows(
                 binomial_delta=binomial_greeks.delta,
                 bachelier_delta=bachelier_greeks.delta,
                 net_transaction_delta=inverse.net_transaction_delta,
+                diagnostic=diagnostic,
+                issue_codes=issue_codes,
+                bid_delta=bid_delta,
+                ask_delta=ask_delta,
             )
         )
 
@@ -149,25 +158,43 @@ def plot_delta_rows(
     snapshot_id: int | str,
     dropped_count: int,
     steps: int,
+    model_forward: float,
 ) -> None:
     if not rows:
         raise ValueError("no valid option rows remain after IV inversion")
 
-    strikes = np.array([row.quote.strike for row in rows])
-    traditional = np.array([row.traditional_delta for row in rows])
-    black76 = np.array([row.black76_delta for row in rows])
-    binomial = np.array([row.binomial_delta for row in rows])
-    bachelier = np.array([row.bachelier_delta for row in rows])
-    ntd = np.array([row.net_transaction_delta for row in rows])
+    eligible_rows = [r for r in rows if r.diagnostic]
+    excluded_rows = [r for r in rows if not r.diagnostic]
 
-    mark_differences = [
-        abs(row.lognormal_vol - row.quote.deribit_mark_iv)
+    el_strikes = np.array([r.quote.strike for r in eligible_rows])
+    el_traditional = np.array([r.traditional_delta for r in eligible_rows])
+    el_black76 = np.array([r.black76_delta for r in eligible_rows])
+    el_binomial = np.array([r.binomial_delta for r in eligible_rows])
+    el_bachelier = np.array([r.bachelier_delta for r in eligible_rows])
+    el_ntd = np.array([r.net_transaction_delta for r in eligible_rows])
+
+    ex_strikes = np.array([r.quote.strike for r in excluded_rows])
+    ex_traditional = np.array([r.traditional_delta for r in excluded_rows])
+    ex_ntd = np.array([r.net_transaction_delta for r in excluded_rows])
+
+    abs_diffs = [
+        (abs(row.lognormal_vol - row.quote.deribit_mark_iv), row.quote.instrument_name)
         for row in rows
         if row.quote.deribit_mark_iv is not None
     ]
-    median_mark_difference = (
-        float(np.median(mark_differences)) if mark_differences else math.nan
-    )
+
+    if abs_diffs:
+        diff_values = [d[0] for d in abs_diffs]
+        max_diff, max_inst = max(abs_diffs, key=lambda x: x[0])
+        p95_diff = float(np.percentile(diff_values, 95))
+        median_diff = float(np.median(diff_values))
+        iv_summary = (
+            f"median |own − mark IV|={median_diff:.4f} | "
+            f"p95={p95_diff:.4f} | max={max_diff:.4f} ({max_inst})"
+        )
+    else:
+        iv_summary = "median |own − mark IV|=n/a"
+
     first = rows[0].quote
 
     with plt.rc_context(
@@ -194,8 +221,8 @@ def plot_delta_rows(
         )
 
         top.plot(
-            strikes,
-            traditional,
+            el_strikes,
+            el_traditional,
             color="#20808D",
             marker="o",
             markersize=3,
@@ -203,8 +230,8 @@ def plot_delta_rows(
             label="Spot-equivalent traditional delta",
         )
         top.plot(
-            strikes,
-            black76,
+            el_strikes,
+            el_black76,
             color="#A84B2F",
             marker="s",
             markersize=3,
@@ -213,20 +240,43 @@ def plot_delta_rows(
             label="Black–76 forward delta",
         )
         top.plot(
-            strikes,
-            binomial,
+            el_strikes,
+            el_binomial,
             color="#1B474D",
             lw=1.4,
             label=f"CRR forward delta ({steps} steps)",
         )
         top.plot(
-            strikes,
-            bachelier,
+            el_strikes,
+            el_bachelier,
             color="#7A39BB",
             lw=1.8,
             ls="-.",
             label="Price-matched Bachelier delta",
         )
+
+        for r in rows:
+            if r.bid_delta is not None and r.ask_delta is not None:
+                top.vlines(
+                    r.quote.strike,
+                    r.bid_delta,
+                    r.ask_delta,
+                    color="#BAB9B4",
+                    linewidth=1.2,
+                    alpha=0.75,
+                )
+
+        if len(ex_strikes) > 0:
+            top.scatter(
+                ex_strikes,
+                ex_traditional,
+                color="#A13544",
+                marker="x",
+                s=40,
+                zorder=4,
+                label="Excluded leg midpoint",
+            )
+
         top.set_ylabel("Delta")
         top.set_title(
             "Traditional deltas use market-mid implied volatility\n"
@@ -236,14 +286,26 @@ def plot_delta_rows(
         top.legend(frameon=False, ncol=2, loc="best")
 
         bottom.plot(
-            strikes,
-            ntd,
+            el_strikes,
+            el_ntd,
             color="#DA7101",
             marker="o",
             markersize=3,
             lw=2.4,
             label="Inverse Net Transaction Delta",
         )
+
+        if len(ex_strikes) > 0:
+            bottom.scatter(
+                ex_strikes,
+                ex_ntd,
+                color="#A13544",
+                marker="x",
+                s=40,
+                zorder=4,
+                label="Excluded leg midpoint",
+            )
+
         bottom.axhline(0.0, color="#7A7974", lw=0.8)
         bottom.set_xlabel("Strike K (USD)")
         bottom.set_ylabel("Base-coin exposure")
@@ -256,7 +318,6 @@ def plot_delta_rows(
         bottom.legend(frameon=False, loc="best")
 
         for axis in (top, bottom):
-            # Mark Spot/Index Price
             axis.axvline(
                 first.index_price, 
                 color="#7A7974", 
@@ -264,13 +325,12 @@ def plot_delta_rows(
                 lw=1.2, 
                 label=f"Index X (${first.index_price:,.0f})"
             )
-            # Mark Forward Price
             axis.axvline(
-                first.forward, 
+                model_forward, 
                 color="#28251D", 
                 ls="--", 
                 lw=1.2, 
-                label=f"Forward F (${first.forward:,.0f})"
+                label=f"Forward F (${model_forward:,.0f})"
             )
             axis.grid(axis="y", color="#D4D1CA", lw=0.8, alpha=0.7)
             axis.grid(axis="x", visible=False)
@@ -288,19 +348,15 @@ def plot_delta_rows(
             x=0.01,
             ha="left",
         )
-        cross_check = (
-            f"{median_mark_difference:.4f}"
-            if math.isfinite(median_mark_difference)
-            else "n/a"
-        )
+
         figure.text(
             0.01,
             -0.02,
             (
                 f"Expiry {expiry} | X={first.index_price:,.2f} | "
-                f"F={first.forward:,.2f} | kept={len(rows)} | "
-                f"dropped={dropped_count} | median |own IV − mark IV|="
-                f"{cross_check}"
+                f"F={model_forward:,.2f} | kept={len(rows)} | "
+                f"excluded={len(excluded_rows)} | dropped={dropped_count} | "
+                f"{iv_summary}"
             ),
             fontsize=8.5,
             color="#7A7974",
@@ -332,7 +388,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
+if __name__ == "__main__":
     args = parse_args()
     store = SnapshotStore(args.db)
 
@@ -347,22 +403,48 @@ def main() -> None:
     else:
         snapshot_id = store.latest_snapshot_id(args.currency)
         if snapshot_id is None:
-            raise SystemExit(
-                "No stored snapshot; use --fetch or --snapshot-id"
-            )
+            raise SystemExit("No stored snapshot; use --fetch or --snapshot-id")
         snapshot = store.load_snapshot(snapshot_id)
+
     if snapshot is None:
-        raise SystemExit(f"Nnapshot {snapshot_id} does not exist")
+        raise SystemExit(f"Snapshot {snapshot_id} does not exist")
+
+    curve_result = build_forward_curve(snapshot)
+    forward_by_expiry = {
+        (
+            expiry_forward.underlying_index,
+            expiry_forward.expiration_timestamp,
+        ): expiry_forward.implied_forward
+        for expiry_forward in curve_result.expiry_forwards
+    }
 
     chain = option_chain_from_snapshot(snapshot)
     selected = select_expiry(chain, args.option_type, args.expiry)
-    rows, dropped = build_delta_rows(selected, args.steps)
+
+    selected_key = (
+        selected[0].underlying_index,
+        selected[0].expiration_timestamp,
+    )
+    if selected_key not in forward_by_expiry:
+        raise SystemExit(
+            "Selected expiry has no diagnostic-eligible "
+            "options-implied forward"
+        )
+
+    rows, dropped = build_delta_rows(
+        selected,
+        args.steps,
+        forward_by_expiry,
+    )
+    
+    model_forward = forward_by_expiry[selected_key]
     plot_delta_rows(
         rows,
         Path(args.output),
         snapshot_id,
         len(dropped),
         args.steps,
+        model_forward,
     )
 
     print(
@@ -371,7 +453,3 @@ def main() -> None:
     )
     for instrument_name, reason in dropped:
         print(f"dropped {instrument_name}: {reason}")
-
-
-if __name__ == "__main__":
-    main()

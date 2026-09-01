@@ -9,6 +9,8 @@ from conftest import (
     central, second, assert_close, otm_leg,
 )
 
+pytestmark = pytest.mark.pricing
+
 # Black-76 (Forward-Space) Tests
 @pytest.mark.parametrize("strike", STRIKES)
 @pytest.mark.parametrize("vol", LOGNORMAL_VOLS)

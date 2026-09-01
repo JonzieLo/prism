@@ -12,6 +12,7 @@ MODELS = [
     # pytest.param(BinomialModel(steps=200), 0.55, id="binomial"),
 ]
 
+pytestmark = pytest.mark.pricing
 
 @pytest.mark.parametrize("model,vol", MODELS)
 @pytest.mark.parametrize("strike", STRIKES)
