@@ -16,6 +16,7 @@ class SurfaceExclusionCode(str, Enum):
 
 @dataclass(frozen=True)
 class SurfaceExclusion:
+    snapshot_id: int
     source_row_id: int | None
     instrument_name: str | None
     underlying_index: str
@@ -26,6 +27,7 @@ class SurfaceExclusion:
 
 @dataclass(frozen=True)
 class SurfaceObservation:
+    snapshot_id: int
     source_row_id: int
     instrument_name: str
     underlying_index: str
@@ -51,7 +53,17 @@ class SurfaceObservation:
     open_interest: float | None
     volume: float | None
 
+    @property
+    def candidate_key(self) -> tuple[int, str, int, float]:
+        return (
+            self.snapshot_id,
+            self.underlying_index,
+            self.expiration_timestamp,
+            self.strike,
+        )
+
 @dataclass(frozen=True)
 class SurfaceObservationResult:
+    snapshot_id: int
     observations: tuple[SurfaceObservation, ...]
     exclusions: tuple[SurfaceExclusion, ...]

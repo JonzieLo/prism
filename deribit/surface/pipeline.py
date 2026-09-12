@@ -22,6 +22,9 @@ def build_surface_observations(
     expiry_forwards: list[ExpiryForward],
     policy: SurfaceFilterPolicy = SurfaceFilterPolicy(),
 ) -> SurfaceObservationResult:
+    if snapshot_id <= 0:
+        raise ValueError("invalid snapshot_id")
+    
     black76 = Black76Model()
     observations: list[SurfaceObservation] = []
     exclusions: list[SurfaceExclusion] = []
@@ -34,6 +37,7 @@ def build_surface_observations(
             continue
         rate = math.log(ef.implied_forward / sample.index_price) / sample.tau
         context_map[key] = SurfaceExpiryContext(
+            snapshot_id=snapshot_id,
             underlying_index=ef.underlying_index,
             expiration_timestamp=ef.expiration_timestamp,
             index_price=sample.index_price,
@@ -53,6 +57,7 @@ def build_surface_observations(
         if context is None:
             exclusions.append(
                 SurfaceExclusion(
+                    snapshot_id=snapshot_id,
                     source_row_id=group[0].source_row_id,
                     instrument_name=group[0].instrument_name,
                     underlying_index=underlying_index,
@@ -86,6 +91,7 @@ def build_surface_observations(
         if not candidates:
             exclusions.append(
                 SurfaceExclusion(
+                    snapshot_id=snapshot_id,
                     source_row_id=group[0].source_row_id,
                     instrument_name=group[0].instrument_name,
                     underlying_index=underlying_index,
@@ -100,6 +106,7 @@ def build_surface_observations(
         if len(candidates) > 1:
             exclusions.append(
                 SurfaceExclusion(
+                    snapshot_id=snapshot_id,
                     source_row_id=candidates[0].source_row_id,
                     instrument_name=candidates[0].instrument_name,
                     underlying_index=underlying_index,
@@ -117,6 +124,7 @@ def build_surface_observations(
         if quote.bid_coin is None or quote.ask_coin is None or quote.bid_coin <= 0.0:
             exclusions.append(
                 SurfaceExclusion(
+                    snapshot_id=snapshot_id,
                     source_row_id=quote.source_row_id,
                     instrument_name=quote.instrument_name,
                     underlying_index=underlying_index,
@@ -131,6 +139,7 @@ def build_surface_observations(
         if quote.ask_coin < quote.bid_coin:
             exclusions.append(
                 SurfaceExclusion(
+                    snapshot_id=snapshot_id,
                     source_row_id=quote.source_row_id,
                     instrument_name=quote.instrument_name,
                     underlying_index=underlying_index,
@@ -146,6 +155,7 @@ def build_surface_observations(
         if policy.max_relative_spread is not None and rel_spread > policy.max_relative_spread:
             exclusions.append(
                 SurfaceExclusion(
+                    snapshot_id=snapshot_id,
                     source_row_id=quote.source_row_id,
                     instrument_name=quote.instrument_name,
                     underlying_index=underlying_index,
@@ -170,6 +180,7 @@ def build_surface_observations(
         except Exception as exc:
             exclusions.append(
                 SurfaceExclusion(
+                    snapshot_id=snapshot_id,
                     source_row_id=quote.source_row_id,
                     instrument_name=quote.instrument_name,
                     underlying_index=underlying_index,
@@ -205,6 +216,7 @@ def build_surface_observations(
 
         observations.append(
             SurfaceObservation(
+                snapshot_id=snapshot_id,
                 source_row_id=quote.source_row_id,
                 instrument_name=quote.instrument_name,
                 underlying_index=underlying_index,
@@ -233,6 +245,7 @@ def build_surface_observations(
         )
 
     return SurfaceObservationResult(
+        snapshot_id=snapshot_id,
         observations=tuple(observations),
         exclusions=tuple(exclusions),
     )

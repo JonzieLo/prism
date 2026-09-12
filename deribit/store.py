@@ -1,7 +1,16 @@
 import json
 import sqlite3
 import time
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
+
+@dataclass(frozen=True)
+class SnapshotMetadata:
+    snapshot_id: int
+    currency: str
+    timestamp_ns: int
+    server_skew_ms: float | None
+    schema_version: str
 
 class SnapshotStore:
     def __init__(self, db_path: str = "snapshots.db"):
@@ -139,3 +148,51 @@ class SnapshotStore:
             )
             row = cursor.fetchone()
             return row[0] if row else None
+
+    def load_snapshot_metadata(
+        self,
+        snapshot_id: int,
+    ) -> Optional[SnapshotMetadata]:
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT snapshot_id, currency, timestamp_ns,
+                       server_skew_ms, schema_version
+                FROM snapshot_meta
+                WHERE snapshot_id = ?
+                """,
+                (snapshot_id,),
+            )
+            row = cursor.fetchone()
+            return SnapshotMetadata(*row) if row else None
+
+    def list_snapshots(
+        self,
+        currency: str | None = None,
+        limit: int = 100,
+    ) -> list[SnapshotMetadata]:
+        """List persisted snapshots newest first for historical selection."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+
+        query = """
+            SELECT snapshot_id, currency, timestamp_ns,
+                   server_skew_ms, schema_version
+            FROM snapshot_meta
+        """
+        parameters: tuple[object, ...]
+        if currency is None:
+            query += " ORDER BY timestamp_ns DESC, snapshot_id DESC LIMIT ?"
+            parameters = (limit,)
+        else:
+            query += """
+                WHERE currency = ?
+                ORDER BY timestamp_ns DESC, snapshot_id DESC
+                LIMIT ?
+            """
+            parameters = (currency.upper(), limit)
+
+        with self._get_conn() as conn:
+            rows = conn.execute(query, parameters).fetchall()
+        return [SnapshotMetadata(*row) for row in rows]

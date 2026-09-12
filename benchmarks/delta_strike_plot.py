@@ -100,7 +100,7 @@ def build_delta_rows(
             binomial_greeks = binomial.greeks(forward, quote.strike, quote.tau, lognormal_vol, rate, quote.option_type)
             bachelier_greeks = bachelier.greeks(forward, quote.strike, quote.tau, normal_vol, rate, quote.option_type)
             cash_price = black76.price(forward, quote.strike, quote.tau, lognormal_vol, rate, quote.option_type)
-            inverse = from_forward_greeks(cash_price, black76_greeks, quote.index_price, forward)
+            inverse = from_forward_greeks(cash_price, black76_greeks, quote.index_price, forward, quote.tau, rate)
 
             bid_delta = None
             ask_delta = None
@@ -123,8 +123,8 @@ def build_delta_rows(
                     bid_cash = black76.price(forward, quote.strike, quote.tau, bid_iv, rate, quote.option_type)
                     ask_cash = black76.price(forward, quote.strike, quote.tau, ask_iv, rate, quote.option_type)
 
-                    bid_delta = from_forward_greeks(bid_cash, bid_greeks, quote.index_price, forward).traditional_spot_delta
-                    ask_delta = from_forward_greeks(ask_cash, ask_greeks, quote.index_price, forward).traditional_spot_delta
+                    bid_delta = from_forward_greeks(bid_cash, bid_greeks, quote.index_price, forward, quote.tau, rate).traditional_spot_delta
+                    ask_delta = from_forward_greeks(ask_cash, ask_greeks, quote.index_price, forward, quote.tau, rate).traditional_spot_delta
                 except ValueError:
                     pass
 

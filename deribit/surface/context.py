@@ -3,6 +3,7 @@ import math
 
 @dataclass(frozen=True)
 class SurfaceExpiryContext:
+    snapshot_id: int
     underlying_index: str
     expiration_timestamp: int
     index_price: float
@@ -11,6 +12,8 @@ class SurfaceExpiryContext:
     rate: float
 
     def __post_init__(self) -> None:
+        if self.snapshot_id <= 0:
+            raise ValueError("invalid snapshot_id")
         if not math.isfinite(self.index_price) or self.index_price <= 0.0:
             raise ValueError("index_price must be finite and positive")
         if not math.isfinite(self.forward) or self.forward <= 0.0:
