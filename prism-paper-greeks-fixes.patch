@@ -1,0 +1,684 @@
+diff --git a/README.md b/README.md
+index 3311ac1..4989593 100644
+--- a/README.md
++++ b/README.md
+@@ -66,7 +66,7 @@ $$
+ DH_T^{BTC}=(D-K)^+=H_T^{USD}.
+ $$
+ 
+-**A BTC-settled call is not itself a Black-Scholes USD call because it pays $\frac{(D-K)^+}{D}$ BTC rather than $(D-K)^+$ USD, so its coin value and spot Greeks also differentiate the reciprocal conversion factor $\frac{1}{D}$.**
++**The contract pays BTC, so its quoted BTC value and BTC-quote Greeks are not ordinary USD Black-Scholes quantities. Under the model assumptions, however, the USD value of that BTC payoff is the ordinary Black-Scholes value $V$, and the contemporaneous BTC quote is $c=V/X$.**
+ 
+ This identity gives the replication argument:
+ 
+@@ -153,9 +153,9 @@ While Black-Scholes and Black-76 yield identical option prices when $F = S e^{r\
+ * Bumping Spot $S$ implicitly moves Forward $F$ via cost-of-carry ($F = S e^{r\tau}$).
+ * Chain Rule ($\frac{\partial F}{\partial S} = e^{r\tau}$) links Spot and Forward sensitivities:
+ 
+-$$\Delta_{\text{BS}} = \frac{\partial V}{\partial S} = \frac{\partial V}{\partial F} \cdot \frac{\partial F}{\partial S} = e^{r\tau} \quad \text{vs.} \quad \Delta_{76} = \Phi(d_1) \quad (\text{Call})$$
++$$\Delta_{\text{BS}} = \frac{\partial V}{\partial S} = \frac{\partial V}{\partial F} \cdot \frac{\partial F}{\partial S} = e^{r\tau}\Delta_{76} = \Phi(d_1) \quad (\text{Call})$$
+ 
+-$$\Gamma_{\text{BS}} = \frac{\partial^2 V}{\partial S^2} = e^{2r\tau} \quad \text{vs.} \quad \Gamma_{76} = \frac{\phi(d_1)}{S \sigma \sqrt{\tau}}$$
++$$\Gamma_{\text{BS}} = \frac{\partial^2 V}{\partial S^2} = e^{2r\tau}\Gamma_{76} = \frac{\phi(d_1)}{S \sigma \sqrt{\tau}}$$
+ 
+ $$\rho_{\text{BS}} = +K \tau e^{-r\tau} \Phi(d_2) \quad \text{vs.} \quad \rho_{76} = -\tau \cdot \text{CallPrice}_{76}$$
+ 
+@@ -333,16 +333,13 @@ $$
+ +\frac{2V}{X^3}.
+ $$
+ 
+-When $X$ is held fixed for a non-spot bump:
++Vega and vomma hold the index denominator fixed:
+ 
+ $$
+ \nu_{\mathrm{coin}}=\frac{\nu_F}{X},
+ \qquad
+-\Theta_{\mathrm{coin}}=\frac{\Theta_F}{X},
+-\qquad
+-\rho_{\mathrm{coin}}=\frac{\rho_F}{X},
+-\qquad
+-\nu_{\mathrm{coin}}=\frac{\nu_F}{X}.
++\mathrm{Vomma}_{\mathrm{coin}}
++=\frac{\mathrm{Vomma}_F}{X}.
+ $$
+ 
+ Because Vanna also differentiates with respect to spot:
+@@ -353,6 +350,21 @@ $$
+ -\frac{\mathrm{Vega}_F}{X^2}.
+ $$
+ 
++Black-76 theta and rho hold the forward fixed, whereas the paper's
++spot Greeks hold $X$ fixed. Since $F=Xe^{r\tau}$, the required
++chain-rule conversions are:
++
++$$
++\Theta_{\mathrm{coin}}
++=\frac{\Theta_F-rF\Delta_F}{X},
++\qquad
++\rho_{\mathrm{coin}}
++=\frac{\rho_F+\tau F\Delta_F}{X}.
++$$
++
++These formulas use calendar theta
++$\Theta=-\frac{\partial V}{\partial\tau}$.
++
+ 
+ ### Delta-vs-Strike Figure
+ 
+@@ -375,17 +387,12 @@ The lower panel shows inverse NTD. Its hump shape may be interpreted as:
+ 
+ ## Implied Volatility Engine
+ 
+-* **Black-Scholes:** Newton iterations followed by Brent on the fixed bracket $[10^{-6},5]$ if Newton does not return.
+-* **Black-76:** The same Newton-then-Brent structure. Its current exception branch returns `0.0` if Brent fails; this is a known limitation and must not be interpreted as a valid zero-volatility solution.
++* **Black-Scholes:** Safeguarded Newton iterations followed by Brent on the fixed bracket $[10^{-6},5]$ if Newton does not converge.
++* **Black-76:** The same safeguarded Newton-then-Brent structure. Solver failure raises `ValueError`; it is never converted into an artificial zero-volatility observation.
+ * **Bachelier:** A scale-aware normal-volatility bracket, an ATM-derived Newton seed, and Brent fallback after bracket expansion.
+ * **CRR binomial:** Brent-only inversion on an explicitly expanded bracket; it does not run Newton first.
+ 
+-Newton steps are evaluated in volatility units through price error divided by vega. Brent solves the price residual on a bracket and follows its own numerical stopping rules. Tests therefore check recovered volatility and, where implemented, repricing error rather than claiming one universal solver tolerance.
+-### Volatility Space Stopping Rule
+-
+-Stopping rules evaluated in dollar space ($|P_{\text{calc}} - P_{\text{market}}| < 10^{-10}$) break down on deep OTM options where Vega is tiny ($\sim 10^{-4}$), leaving errors as large as $10^{-6}$ in volatility space. PRISM enforces convergence directly in **volatility space**:
+-
+-$$\left| \frac{P_{\text{calc}} - P_{\text{market}}}{\mathcal{V}} \right| < 10^{-10}$$
++Newton steps are evaluated in volatility units through price error divided by vega. Newton is used only while its candidate remains inside the volatility bracket. Brent provides the bracketed fallback. The returned root must be finite and positive and must pass a scale-aware repricing check that includes the local vega times the target volatility tolerance.
+ 
+ ## Forward Curve & Chain Data Cleaning
+ 
+@@ -395,7 +402,7 @@ Options of the same expiry should be priced relative to the same expiry forward.
+ 
+ Deribit's BTC Index $X$ is the current USD value of one BTC. An inverse option premium $c$ is quoted in BTC, so its current USD-equivalent value is:
+ $$
+-V_{\text{USD}}=X_C
++V_{\text{USD}}=Xc
+ $$
+ 
+ This conversion does *not* make the index the option's pricing underlying.
+@@ -506,4 +513,4 @@ Vomma is validated as a central first derivative of vega in the analytic-model t
+ * **IV round trips:** Exercises Black-Scholes, Black-76, Bachelier, and CRR over multiple strikes and volatility regimes with model-specific tolerances.
+ * **Put-call parity:** Tests $C-P=S-Ke^{-r\tau}$ for Black-Scholes and $C-P=e^{-r\tau}(F-K)$ for forward models.
+ * **Greek checks:** Analytic Greeks are compared with finite differences; CRR Greeks are checked against Black-76 and independent tree differences.
+-* **Bounds:** Tests reject sub-intrinsic quotes across the model suite. CRR has a dedicated ceiling test. Black-Scholes and Black-76 implement ceiling guards but do not yet have dedicated above-ceiling tests. Bachelier has no finite lognormal-style ceiling.
+\ No newline at end of file
++* **Bounds:** Tests reject sub-intrinsic quotes across the model suite. CRR has a dedicated ceiling test. Black-Scholes and Black-76 implement ceiling guards but do not yet have dedicated above-ceiling tests. Bachelier has no finite lognormal-style ceiling.
+diff --git a/benchmarks/delta_strike_plot.py b/benchmarks/delta_strike_plot.py
+index ff95a5f..5f078a3 100644
+--- a/benchmarks/delta_strike_plot.py
++++ b/benchmarks/delta_strike_plot.py
+@@ -100,7 +100,14 @@ def build_delta_rows(
+             binomial_greeks = binomial.greeks(forward, quote.strike, quote.tau, lognormal_vol, rate, quote.option_type)
+             bachelier_greeks = bachelier.greeks(forward, quote.strike, quote.tau, normal_vol, rate, quote.option_type)
+             cash_price = black76.price(forward, quote.strike, quote.tau, lognormal_vol, rate, quote.option_type)
+-            inverse = from_forward_greeks(cash_price, black76_greeks, quote.index_price, forward)
++            inverse = from_forward_greeks(
++                cash_price,
++                black76_greeks,
++                quote.index_price,
++                forward,
++                quote.tau,
++                rate,
++            )
+ 
+             bid_delta = None
+             ask_delta = None
+@@ -123,8 +130,22 @@ def build_delta_rows(
+                     bid_cash = black76.price(forward, quote.strike, quote.tau, bid_iv, rate, quote.option_type)
+                     ask_cash = black76.price(forward, quote.strike, quote.tau, ask_iv, rate, quote.option_type)
+ 
+-                    bid_delta = from_forward_greeks(bid_cash, bid_greeks, quote.index_price, forward).traditional_spot_delta
+-                    ask_delta = from_forward_greeks(ask_cash, ask_greeks, quote.index_price, forward).traditional_spot_delta
++                    bid_delta = from_forward_greeks(
++                        bid_cash,
++                        bid_greeks,
++                        quote.index_price,
++                        forward,
++                        quote.tau,
++                        rate,
++                    ).traditional_spot_delta
++                    ask_delta = from_forward_greeks(
++                        ask_cash,
++                        ask_greeks,
++                        quote.index_price,
++                        forward,
++                        quote.tau,
++                        rate,
++                    ).traditional_spot_delta
+                 except ValueError:
+                     pass
+ 
+@@ -308,9 +329,9 @@ def plot_delta_rows(
+ 
+         bottom.axhline(0.0, color="#7A7974", lw=0.8)
+         bottom.set_xlabel("Strike K (USD)")
+-        bottom.set_ylabel("Base-coin exposure")
++        bottom.set_ylabel("NTD (BTC per 1-BTC contract)")
+         bottom.set_title(
+-            "Inverse delta subtracts the coin option premium\n"
++            "NTD is scaled BTC exposure, not raw coin-price delta\n"
+             r"$\mathrm{NTD}=\Delta_{\mathrm{traditional}}-c"
+             r"=X\,\partial(C/X)/\partial X$",
+             loc="left",
+@@ -452,4 +473,4 @@ if __name__ == "__main__":
+         f"kept={len(rows)} dropped={len(dropped)} output={args.output}"
+     )
+     for instrument_name, reason in dropped:
+-        print(f"dropped {instrument_name}: {reason}")
+\ No newline at end of file
++        print(f"dropped {instrument_name}: {reason}")
+diff --git a/deribit/pricing/black_scholes.py b/deribit/pricing/black_scholes.py
+index 680be7a..e775956 100644
+--- a/deribit/pricing/black_scholes.py
++++ b/deribit/pricing/black_scholes.py
+@@ -85,7 +85,8 @@ class BlackScholesModel(OptionModel):
+ 
+         vol_output = None
+         v = 0.30
+-        # Newton-Raphson
++        lower, upper = 1e-6, 5.0
++        # Safeguarded Newton-Raphson acceleration.
+         for _ in range(20):
+             p = self.price(spot, strike, tau, v, rate, cp)
+             diff = p - price
+@@ -94,22 +95,41 @@ class BlackScholesModel(OptionModel):
+                 break
+ 
+             step = diff / v_greeks.vega
+-            if abs(step) < 1e-10:
+-                if v - step > 0:
+-                    vol_output = v - step
++            candidate = v - step
++            if not lower < candidate < upper:
+                 break
+-        # Brent's Method
+-        if vol_output == None:
++            v = candidate
++            if abs(step) < 1e-12:
++                vol_output = v
++                break
++
++        # Bracketed fallback and common validation path.
++        if vol_output is None:
+             try:
+-                vol_output = brentq(obj, 1e-6, 5.0, xtol = 1e-10)
+-            except Exception:
+-                raise ValueError(f"Failed to converge implied vol for price {price}")
++                vol_output = brentq(
++                    obj,
++                    lower,
++                    upper,
++                    xtol=1e-12,
++                    rtol=4.0 * np.finfo(float).eps,
++                )
++            except Exception as exc:
++                raise ValueError(
++                    f"Failed to converge implied vol for price {price}"
++                ) from exc
+             
+         if not math.isfinite(vol_output) or vol_output <= 0.0:
+             raise ValueError(f"Implied volatility solver produced invalid root: {vol_output}")
+ 
+         eps = float(np.finfo(float).eps)
+-        tolerance = max(1e-9, 100.0 * eps * price)
++        root_vega = self.greeks(
++            spot, strike, tau, vol_output, rate, cp
++        ).vega
++        tolerance = max(
++            1e-8,
++            100.0 * eps * max(1.0, abs(price)),
++            root_vega * 1e-10,
++        )
+ 
+         repriced = self.price(spot, strike, tau, vol_output, rate, cp)
+         price_diff = abs(repriced - price)
+@@ -195,7 +215,8 @@ class Black76Model(OptionModel):
+ 
+         vol_output = None
+         v = 0.30
+-        # Newton-Raphson
++        lower, upper = 1e-6, 5.0
++        # Safeguarded Newton-Raphson acceleration.
+         for _ in range(20):
+             p = self.price(forward, strike, tau, v, rate, cp)
+             diff = p - price
+@@ -203,23 +224,41 @@ class Black76Model(OptionModel):
+             if v_greeks.vega < 1e-10:
+                 break
+             step = diff / v_greeks.vega
+-            if abs(step) < 1e-10:
+-                if v - step > 0:
+-                    vol_output = v - step
++            candidate = v - step
++            if not lower < candidate < upper:
++                break
++            v = candidate
++            if abs(step) < 1e-12:
++                vol_output = v
+                 break
+ 
+-        # Brent's Method
+-        if vol_output == None:
++        # Bracketed fallback and common validation path.
++        if vol_output is None:
+             try:
+-                return brentq(obj, 1e-6, 5.0, xtol = 1e-10)
+-            except Exception:
+-                raise ValueError(f"Failed to converge implied vol for price {price}")
++                vol_output = brentq(
++                    obj,
++                    lower,
++                    upper,
++                    xtol=1e-12,
++                    rtol=4.0 * np.finfo(float).eps,
++                )
++            except Exception as exc:
++                raise ValueError(
++                    f"Failed to converge implied vol for price {price}"
++                ) from exc
+             
+         if not math.isfinite(vol_output) or vol_output <= 0.0:
+             raise ValueError(f"Implied volatility solver produced invalid root: {vol_output}")
+ 
+         eps = float(np.finfo(float).eps)
+-        tolerance = max(1e-9, 100.0 * eps * price)
++        root_vega = self.greeks(
++            forward, strike, tau, vol_output, rate, cp
++        ).vega
++        tolerance = max(
++            1e-8,
++            100.0 * eps * max(1.0, abs(price)),
++            root_vega * 1e-10,
++        )
+ 
+         repriced = self.price(forward, strike, tau, vol_output, rate, cp)
+         price_diff = abs(repriced - price)
+@@ -230,4 +269,4 @@ class Black76Model(OptionModel):
+                 f"repriced={repriced:.6f}, diff={price_diff:.2e} > tol={tolerance:.2e}"
+             )
+ 
+-        return vol_output
+\ No newline at end of file
++        return vol_output
+diff --git a/deribit/pricing/inverse.py b/deribit/pricing/inverse.py
+index 445f3fa..0c24a0c 100644
+--- a/deribit/pricing/inverse.py
++++ b/deribit/pricing/inverse.py
+@@ -22,17 +22,32 @@ def from_forward_greeks(
+     forward_greeks: Greeks,
+     index_price: float,
+     forward: float,
++    tau: float,
++    rate: float,
+ ) -> InverseGreeks:
+-    """Convert cash-valued forward Greeks to inverse coin units."""
++    """Convert fixed-forward cash Greeks to spot-held-fixed inverse coin Greeks.
++
++    The conversion assumes ``forward = index_price * exp(rate * tau)`` and
++    holds that carry relationship fixed for a spot bump. Theta follows the
++    calendar-time convention ``-dV/dtau``.
++    """
+     if index_price <= 0.0:
+         raise ValueError(f"Index price must be positive, got {index_price}")
+     if forward <= 0.0:
+         raise ValueError(f"Forward must be positive, got {forward}")
++    if tau <= 0.0:
++        raise ValueError(f"Time to expiry must be positive, got {tau}")
+ 
+     forward_per_index = forward / index_price
+     spot_delta = forward_per_index * forward_greeks.delta
+     spot_gamma = forward_per_index**2 * forward_greeks.gamma
+     spot_vanna = forward_per_index * forward_greeks.vanna
++    spot_theta = (
++        forward_greeks.theta - rate * forward * forward_greeks.delta
++    )
++    spot_rho = (
++        forward_greeks.rho + tau * forward * forward_greeks.delta
++    )
+     coin_price = cash_price / index_price
+     net_transaction_delta = spot_delta - coin_price
+ 
+@@ -47,11 +62,11 @@ def from_forward_greeks(
+             + 2.0 * cash_price / index_price**3
+         ),
+         coin_vega=forward_greeks.vega / index_price,
+-        coin_theta=forward_greeks.theta / index_price,
+-        coin_rho=forward_greeks.rho / index_price,
++        coin_theta=spot_theta / index_price,
++        coin_rho=spot_rho / index_price,
+         coin_vanna=(
+             spot_vanna / index_price
+             - forward_greeks.vega / index_price**2
+         ),
+         coin_vomma=forward_greeks.vomma / index_price,
+-    )
+\ No newline at end of file
++    )
+diff --git a/tests/test_inverse.py b/tests/test_inverse.py
+index 669c0f2..9e1d6c8 100644
+--- a/tests/test_inverse.py
++++ b/tests/test_inverse.py
+@@ -1,16 +1,23 @@
++import math
++
+ import pytest
++from scipy.stats import norm
+ 
+-from deribit.pricing import Black76Model, from_forward_greeks
++from deribit.pricing import (
++    Black76Model,
++    BlackScholesModel,
++    from_forward_greeks,
++)
+ 
+ pytestmark = pytest.mark.pricing
+ 
+ def test_inverse_greeks_obey_quotient_and_ntd_identities():
+     index = 65_000.0
+-    forward = 66_000.0
+     strike = 65_000.0
+     tau = 0.25
+     vol = 0.55
+     rate = 0.03
++    forward = index * math.exp(rate * tau)
+     model = Black76Model()
+ 
+     cash_price = model.price(
+@@ -24,6 +31,8 @@ def test_inverse_greeks_obey_quotient_and_ntd_identities():
+         forward_greeks,
+         index,
+         forward,
++        tau,
++        rate,
+     )
+ 
+     assert inverse.coin_price == pytest.approx(cash_price / index)
+@@ -38,10 +47,174 @@ def test_inverse_greeks_obey_quotient_and_ntd_identities():
+     )
+ 
+ 
++@pytest.mark.parametrize("cp", ["call", "put"])
++@pytest.mark.parametrize("strike", [50_000.0, 65_000.0, 80_000.0])
++def test_inverse_greeks_match_paper_spot_convention(cp, strike):
++    """Map Black-76 Greeks to Table A.1's spot-held-fixed convention."""
++    spot = 65_000.0
++    tau = 0.40
++    vol = 0.55
++    rate = 0.03
++    forward = spot * math.exp(rate * tau)
++    b76 = Black76Model()
++    bs = BlackScholesModel()
++
++    cash_price = b76.price(forward, strike, tau, vol, rate, cp)
++    forward_greeks = b76.greeks(
++        forward, strike, tau, vol, rate, cp
++    )
++    spot_greeks = bs.greeks(spot, strike, tau, vol, rate, cp)
++    inverse = from_forward_greeks(
++        cash_price,
++        forward_greeks,
++        spot,
++        forward,
++        tau,
++        rate,
++    )
++
++    assert cash_price == pytest.approx(
++        bs.price(spot, strike, tau, vol, rate, cp), rel=1e-13
++    )
++    assert inverse.traditional_spot_delta == pytest.approx(
++        spot_greeks.delta, rel=1e-13
++    )
++    assert inverse.coin_delta == pytest.approx(
++        (spot * spot_greeks.delta - cash_price) / spot**2,
++        rel=1e-13,
++        abs=1e-16,
++    )
++    assert inverse.coin_gamma == pytest.approx(
++        spot_greeks.gamma / spot
++        - 2.0 * spot_greeks.delta / spot**2
++        + 2.0 * cash_price / spot**3,
++        rel=1e-12,
++        abs=1e-18,
++    )
++    assert inverse.coin_vega == pytest.approx(
++        spot_greeks.vega / spot, rel=1e-13
++    )
++    assert inverse.coin_theta == pytest.approx(
++        spot_greeks.theta / spot, rel=1e-13
++    )
++    assert inverse.coin_rho == pytest.approx(
++        spot_greeks.rho / spot, rel=1e-13, abs=1e-16
++    )
++    assert inverse.coin_vanna == pytest.approx(
++        spot_greeks.vanna / spot - spot_greeks.vega / spot**2,
++        rel=1e-12,
++        abs=1e-16,
++    )
++    assert inverse.coin_vomma == pytest.approx(
++        spot_greeks.vomma / spot, rel=1e-12, abs=1e-16
++    )
++
++    sqrt_tau = math.sqrt(tau)
++    d1 = (
++        math.log(spot / strike)
++        + (rate + 0.5 * vol * vol) * tau
++    ) / (vol * sqrt_tau)
++    d2 = d1 - vol * sqrt_tau
++    expected_ntd = (
++        strike / forward * norm.cdf(d2)
++        if cp == "call"
++        else -strike / forward * norm.cdf(-d2)
++    )
++    assert inverse.net_transaction_delta == pytest.approx(
++        expected_ntd, rel=1e-13
++    )
++
++
++@pytest.mark.parametrize("cp", ["call", "put"])
++def test_coin_greeks_match_direct_finite_differences(cp):
++    """Differentiate c(S, sigma, r, tau) = BS(S, ...)/S directly."""
++    spot = 65_000.0
++    strike = 60_000.0
++    tau = 0.40
++    vol = 0.55
++    rate = 0.03
++    forward = spot * math.exp(rate * tau)
++    b76 = Black76Model()
++    bs = BlackScholesModel()
++
++    inverse = from_forward_greeks(
++        b76.price(forward, strike, tau, vol, rate, cp),
++        b76.greeks(forward, strike, tau, vol, rate, cp),
++        spot,
++        forward,
++        tau,
++        rate,
++    )
++
++    def coin_value(
++        s: float = spot,
++        sigma: float = vol,
++        t: float = tau,
++        r: float = rate,
++    ) -> float:
++        return bs.price(s, strike, t, sigma, r, cp) / s
++
++    def coin_vega(s: float = spot, sigma: float = vol) -> float:
++        return bs.greeks(s, strike, tau, sigma, rate, cp).vega / s
++
++    hs = 1.0
++    hv = 1e-5
++    ht = 1e-5
++    hr = 1e-5
++
++    fd_delta = (
++        coin_value(s=spot + hs) - coin_value(s=spot - hs)
++    ) / (2.0 * hs)
++    fd_gamma = (
++        coin_value(s=spot + hs)
++        - 2.0 * coin_value()
++        + coin_value(s=spot - hs)
++    ) / hs**2
++    fd_vega = (
++        coin_value(sigma=vol + hv) - coin_value(sigma=vol - hv)
++    ) / (2.0 * hv)
++    fd_theta = -(
++        coin_value(t=tau + ht) - coin_value(t=tau - ht)
++    ) / (2.0 * ht)
++    fd_rho = (
++        coin_value(r=rate + hr) - coin_value(r=rate - hr)
++    ) / (2.0 * hr)
++    fd_vanna = (
++        coin_vega(s=spot + hs) - coin_vega(s=spot - hs)
++    ) / (2.0 * hs)
++    fd_vomma = (
++        coin_vega(sigma=vol + hv) - coin_vega(sigma=vol - hv)
++    ) / (2.0 * hv)
++
++    assert inverse.coin_delta == pytest.approx(
++        fd_delta, rel=2e-9, abs=1e-14
++    )
++    assert inverse.coin_gamma == pytest.approx(
++        fd_gamma, rel=2e-5, abs=1e-16
++    )
++    assert inverse.coin_vega == pytest.approx(
++        fd_vega, rel=2e-9, abs=1e-10
++    )
++    assert inverse.coin_theta == pytest.approx(
++        fd_theta, rel=2e-9, abs=1e-10
++    )
++    assert inverse.coin_rho == pytest.approx(
++        fd_rho, rel=2e-9, abs=1e-10
++    )
++    assert inverse.coin_vanna == pytest.approx(
++        fd_vanna, rel=2e-8, abs=1e-12
++    )
++    assert inverse.coin_vomma == pytest.approx(
++        fd_vomma, rel=2e-8, abs=1e-10
++    )
++
++
+ def test_inverse_greeks_reject_non_positive_conversion_prices():
+     model = Black76Model()
+     greeks = model.greeks(
+         65_000.0, 65_000.0, 0.25, 0.55, 0.03, "call"
+     )
+     with pytest.raises(ValueError):
+-        from_forward_greeks(1_000.0, greeks, 0.0, 65_000.0)
++        from_forward_greeks(
++            1_000.0, greeks, 0.0, 65_000.0, 0.25, 0.03
++        )
+diff --git a/tests/test_surface.py b/tests/test_surface.py
+index 1881dc4..9e0990b 100644
+--- a/tests/test_surface.py
++++ b/tests/test_surface.py
+@@ -1,15 +1,98 @@
++import math
++
+ import pytest
++
++from deribit.chain import OptionQuote
++from deribit.forwards import ExpiryForward
++from deribit.pricing import Black76Model
+ from deribit.surface.pipeline import build_surface_observations
+-from deribit.surface.observations import SurfaceExclusionCode
+ 
+-def test_canonical_otm_leg_selection_and_independence(sample_snapshot, curve_result):
++
++def _quote(
++    source_row_id: int,
++    option_type: str,
++    strike: float,
++    index: float,
++    forward: float,
++    tau: float,
++    rate: float,
++) -> OptionQuote:
++    model = Black76Model()
++    mid_usd = model.price(
++        forward, strike, tau, 0.55, rate, option_type
++    )
++    mid_coin = mid_usd / index
++    suffix = "C" if option_type == "call" else "P"
++    return OptionQuote(
++        source_row_id=source_row_id,
++        instrument_name=f"BTC-TEST-{strike:.0f}-{suffix}",
++        option_type=option_type,
++        strike=strike,
++        expiration_timestamp=1_800_000_000_000,
++        underlying_index="BTC-TEST",
++        settlement_currency="BTC",
++        contract_size=1.0,
++        index_price=index,
++        tau=tau,
++        bid_coin=0.95 * mid_coin,
++        ask_coin=1.05 * mid_coin,
++        bid_amount=1.0,
++        ask_amount=1.0,
++        mark_coin=mid_coin,
++        deribit_mark_iv=None,
++        open_interest=100.0,
++        volume=10.0,
++        last_coin=mid_coin,
++    )
++
++
++def test_canonical_otm_leg_selection_and_independence():
++    index = 65_000.0
++    forward = 66_000.0
++    tau = 0.40
++    rate = math.log(forward / index) / tau
++    strikes = [55_000.0, 65_000.0, 75_000.0]
++    quotes = [
++        _quote(
++            source_row_id,
++            option_type,
++            strike,
++            index,
++            forward,
++            tau,
++            rate,
++        )
++        for source_row_id, (strike, option_type) in enumerate(
++            (
++                (strike, option_type)
++                for strike in strikes
++                for option_type in ("call", "put")
++            ),
++            start=1,
++        )
++    ]
++    expiry_forward = ExpiryForward(
++        expiration_timestamp=1_800_000_000_000,
++        underlying_index="BTC-TEST",
++        implied_forward=forward,
++        dispersion_mad=0.0,
++        dispersion_iqr=0.0,
++        pair_count=len(strikes),
++        best_synthetic_buy=None,
++        best_synthetic_buy_strike=None,
++        best_synthetic_sell=None,
++        best_synthetic_sell_strike=None,
++    )
++
+     res = build_surface_observations(
+         snapshot_id=1,
+-        quotes=list(curve_result.quotes),
+-        expiry_forwards=list(curve_result.expiry_forwards),
++        quotes=quotes,
++        expiry_forwards=[expiry_forward],
+     )
+     keys = [(obs.expiration_timestamp, obs.strike) for obs in res.observations]
+     assert len(keys) == len(set(keys))
++    assert len(keys) == len(strikes)
++    assert not res.exclusions
+ 
+     for obs in res.observations:
+         if obs.strike < obs.forward:
+@@ -18,4 +101,4 @@ def test_canonical_otm_leg_selection_and_independence(sample_snapshot, curve_res
+             assert obs.option_type == "call"
+ 
+         assert obs.mid_iv > 0.0
+-        assert obs.total_variance == pytest.approx(obs.mid_iv ** 2 * obs.tau)
+\ No newline at end of file
++        assert obs.total_variance == pytest.approx(obs.mid_iv ** 2 * obs.tau)

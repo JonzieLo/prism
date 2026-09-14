@@ -1,10 +1,12 @@
-.PHONY: all test integration snapshot figure forwards forward_curve segmentation
+.PHONY: all test integration snapshot figure forwards forward_curve segmentation raw_surface
 
 PYTHON ?= python3
 # PYTHON := .venv/bin/python
 DB ?= snapshots.db
 OUTPUT ?= figs/delta_vs_strike.png
 FORWARD_OUTPUT ?= figs/forward_curve.png
+RAW_SURFACE_OUTPUT ?= figs/raw_vol_smiles.png
+SURFACE_MODEL ?= black76
 
 all: test integration snapshot forwards forward_curve segmentation
 
@@ -25,3 +27,6 @@ forward_curve:
 
 segmentation:
 	$(PYTHON) -m pytest -q -m segmentation
+
+raw_surface:
+	$(PYTHON) -m benchmarks.raw_vol_surface_plot --db $(DB) --model $(SURFACE_MODEL) --output $(RAW_SURFACE_OUTPUT)
