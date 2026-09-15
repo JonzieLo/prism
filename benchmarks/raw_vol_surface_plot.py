@@ -29,9 +29,24 @@ async def fetch_snapshot(
     return store.save_snapshot(currency, snapshot)
 
 
-def plot_raw_iv(result: RawIVResult, output: Path) -> None:
+def plot_raw_iv(
+    result: RawIVResult,
+    output: Path,
+    *,
+    x_axis: str = "log_moneyness",
+    y_axis: str = "implied_vol",
+) -> None:
     if not result.points:
         raise ValueError("No implied-volatility points were recovered")
+    if x_axis not in {"strike", "log_moneyness"}:
+        raise ValueError(f"Unsupported x-axis: {x_axis}")
+    if y_axis not in {"implied_vol", "total_variance"}:
+        raise ValueError(f"Unsupported y-axis: {y_axis}")
+    if y_axis == "total_variance" and result.model_name == "bachelier":
+        raise ValueError(
+            "M3 total variance is lognormal sigma^2 * tau; "
+            "raw Bachelier normal volatility is not directly comparable"
+        )
 
     grouped = defaultdict(list)
     for point in result.points:
@@ -62,17 +77,32 @@ def plot_raw_iv(result: RawIVResult, output: Path) -> None:
 
         for color, expiry in zip(colors, expiries):
             points = sorted(grouped[expiry], key=lambda item: item.strike)
-            strikes = np.array([item.strike for item in points])
-            vols = np.array([item.implied_vol for item in points])
-            if not is_normal:
-                vols *= 100.0
+            x_values = np.array(
+                [
+                    item.strike
+                    if x_axis == "strike"
+                    else item.log_moneyness
+                    for item in points
+                ]
+            )
+            if y_axis == "total_variance":
+                y_values = np.array(
+                    [item.total_variance for item in points],
+                    dtype=float,
+                )
+            else:
+                y_values = np.array(
+                    [item.implied_vol for item in points]
+                )
+                if not is_normal:
+                    y_values *= 100.0
             label = datetime.fromtimestamp(
                 expiry / 1000.0,
                 tz=timezone.utc,
             ).strftime("%d %b %Y")
             axis.plot(
-                strikes,
-                vols,
+                x_values,
+                y_values,
                 color=color,
                 marker="o",
                 markersize=3.5,
@@ -83,17 +113,37 @@ def plot_raw_iv(result: RawIVResult, output: Path) -> None:
         model_label = result.model_name.replace("_", " ").title()
         if result.model_name == "inverse":
             model_label = "Inverse premium via Black-76"
+        metric_label = (
+            "total variance"
+            if y_axis == "total_variance"
+            else "implied volatility"
+        )
         axis.set_title(
-            f"Raw {model_label} implied volatility by expiry\n"
+            f"Raw {model_label} {metric_label} by expiry\n"
             "Canonical OTM midpoints; lines only connect observed strikes",
             loc="left",
         )
-        axis.set_xlabel("Strike K (USD)")
-        axis.set_ylabel(
-            "Normal IV (USD / sqrt(year))"
-            if is_normal
-            else "Lognormal implied volatility (%)"
+        axis.set_xlabel(
+            "Strike K (USD)"
+            if x_axis == "strike"
+            else "Log-moneyness k = ln(K / F)"
         )
+        if x_axis == "log_moneyness":
+            axis.axvline(
+                0.0,
+                color="#7A7974",
+                linestyle="--",
+                linewidth=1.0,
+                label="Forward (k = 0)",
+            )
+        if y_axis == "total_variance":
+            axis.set_ylabel("Total variance w = implied volatility² × tau")
+        else:
+            axis.set_ylabel(
+                "Normal IV (USD / sqrt(year))"
+                if is_normal
+                else "Lognormal implied volatility (%)"
+            )
         axis.grid(axis="y", color="#D4D1CA", linewidth=0.7)
         axis.grid(axis="x", visible=False)
         axis.spines["top"].set_visible(False)
@@ -145,6 +195,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument(
+        "--x-axis",
+        choices=("strike", "log_moneyness"),
+        default="log_moneyness",
+    )
+    parser.add_argument(
+        "--y-axis",
+        choices=("implied_vol", "total_variance"),
+        default="implied_vol",
+    )
+    parser.add_argument(
         "--output",
         default="figs/raw_vol_smiles.png",
     )
@@ -180,7 +240,12 @@ if __name__ == "__main__":
         args.model,
         binomial_steps=args.steps,
     )
-    plot_raw_iv(result, Path(args.output))
+    plot_raw_iv(
+        result,
+        Path(args.output),
+        x_axis=args.x_axis,
+        y_axis=args.y_axis,
+    )
 
     print(
         f"snapshot={snapshot_id} model={args.model} "

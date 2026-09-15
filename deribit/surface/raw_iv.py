@@ -44,7 +44,9 @@ class RawIVPoint:
     strike: float
     tau: float
     rate: float
+    log_moneyness: float
     implied_vol: float
+    total_variance: float | None
     vol_unit: str
 
 
@@ -119,7 +121,7 @@ def build_raw_iv_points(
     *,
     binomial_steps: int = 100,
 ) -> RawIVResult:
-    """Recover raw model IVs without fitting or interpolating a surface."""
+    
     if snapshot_id <= 0:
         raise ValueError("snapshot_id must be positive")
     if model_name not in SURFACE_MODEL_NAMES:
@@ -216,7 +218,13 @@ def build_raw_iv_points(
                 strike=strike,
                 tau=quote.tau,
                 rate=rate,
+                log_moneyness=math.log(strike / forward),
                 implied_vol=implied_vol,
+                total_variance=(
+                    None
+                    if model_name == "bachelier"
+                    else implied_vol * implied_vol * quote.tau
+                ),
                 vol_unit=(
                     "USD/sqrt(year)"
                     if model_name == "bachelier"
