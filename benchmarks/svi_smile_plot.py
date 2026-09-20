@@ -45,18 +45,29 @@ def plot_svi_smile(
     output: Path,
     *,
     snapshot_timestamp_ns: int | None = None,
+    plot_space: str = 'implied_vol',
 ) -> None:
+    if plot_space not in {'implied_vol', 'total_variance'}:
+        raise ValueError(f"Unsupported plot space: {plot_space}")
     residuals = sorted(
         smile.residuals,
         key=lambda item: item.log_moneyness,
     )
     observed_k = np.array([item.log_moneyness for item in residuals])
-    market_w = np.array(
-        [item.market_total_variance for item in residuals]
-    )
-    variance_residuals = np.array(
-        [item.total_variance_residual for item in residuals]
-    )
+    if plot_space == "implied_vol":
+        market_w = np.array(
+            [item.market_iv * 100.0 for item in residuals]
+        )
+        fitted_residuals = np.array(
+            [item.iv_residual * 100.0 for item in residuals]
+        )
+    else:
+        market_w = np.array(
+            [item.market_total_variance for item in residuals]
+        )
+        fitted_residuals = np.array(
+            [item.total_variance_residual for item in residuals]
+        )
     option_types = np.array([item.option_type for item in residuals])
     inside_spread = np.array(
         [
@@ -72,7 +83,12 @@ def plot_svi_smile(
         smile.observed_k_max + padding,
         501,
     )
-    fitted_w = smile.parameters.total_variance(k_grid)
+    if plot_space == "implied_vol":
+        fitted_w = (
+            smile.parameters.implied_vol(k_grid, smile.tau) * 100.0
+        )
+    else:
+        fitted_w = smile.parameters.total_variance(k_grid)
     in_observed_range = (
         (k_grid >= smile.observed_k_min)
         & (k_grid <= smile.observed_k_max)
@@ -142,7 +158,7 @@ def plot_svi_smile(
 
         residual_axis.scatter(
             observed_k[inside_spread],
-            variance_residuals[inside_spread],
+            fitted_residuals[inside_spread],
             color="#20808D",
             marker="o",
             s=28,
@@ -150,7 +166,7 @@ def plot_svi_smile(
         )
         residual_axis.scatter(
             observed_k[~inside_spread],
-            variance_residuals[~inside_spread],
+            fitted_residuals[~inside_spread],
             color="#A13544",
             marker="x",
             s=38,
@@ -163,12 +179,20 @@ def plot_svi_smile(
         ).strftime("%d %b %Y")
         report = smile.arbitrage_report
         smile_axis.set_title(
-            f"BTC total-variance smile: {expiry}\n"
+            f"BTC implied-volatility smile: {expiry}\n" if plot_space == "implied_vol" else f"BTC total-variance smile: {expiry}\n"
             "Market midpoints versus butterfly-checked raw SVI",
             loc="left",
         )
-        smile_axis.set_ylabel("Total variance w")
-        residual_axis.set_ylabel("Market − SVI w")
+        smile_axis.set_ylabel(
+            "Implied volatility (%)"
+            if plot_space == "implied_vol"
+            else "Total variance w"
+        )
+        residual_axis.set_ylabel(
+            "Market − SVI (vol points)"
+            if plot_space == "implied_vol"
+            else "Market − SVI w"
+        )
         residual_axis.set_xlabel("Log-moneyness k = ln(K / F)")
         residual_axis.axhline(0.0, color="#7A7974", linewidth=0.9)
 
@@ -232,6 +256,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-abs-k", type=float, default=0.75)
     parser.add_argument("--max-relative-spread", type=float)
     parser.add_argument(
+        "--plot-space",
+        choices=("implied_vol", "total_variance"),
+        default="implied_vol",
+    )
+    parser.add_argument(
         "--output",
         default="figs/svi_smile.png",
     )
@@ -283,6 +312,7 @@ if __name__ == "__main__":
         snapshot_timestamp_ns=(
             metadata.timestamp_ns if metadata is not None else None
         ),
+        plot_space=args.plot_space,
     )
 
     p = smile.parameters

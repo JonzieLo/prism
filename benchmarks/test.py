@@ -21,4 +21,3 @@ for expiry in curve.expiry_forwards:
         f"Pairs: {expiry.pair_count} | "
         f"Forward: {expiry.implied_forward:,.2f}"
     )
-PY

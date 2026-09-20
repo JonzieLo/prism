@@ -88,3 +88,41 @@ class SVIParameters:
         if np.any(variance < 0.0):
             raise ValueError("SVI produced negative total variance")
         return np.sqrt(variance / tau)
+
+
+    ###Dyanmics
+    def dvol_dk(
+        self,
+        k: ArrayLike,
+        tau: float,
+    ) -> NDArray[np.float64]:
+        vol = self.implied_vol(k, tau)
+        return self.first_derivative(k) / (2.0 * tau * vol)
+
+    def dvol_dforward_fixed_strike(
+        self,
+        k: ArrayLike,
+        forward: float,
+        tau: float,
+    ) -> NDArray[np.float64]:
+        if not np.isfinite(forward) or forward <= 0.0:
+            raise ValueError("forward must be finite and positive")
+        return -self.dvol_dk(k, tau) / forward
+
+    def dvol_dspot_fixed_strike(
+        self,
+        k: ArrayLike,
+        spot: float,
+        tau: float,
+        *,
+        forward_spot_elasticity: float = 1.0, ### d ln(F) / d ln(S)
+    ) -> NDArray[np.float64]:
+        if not np.isfinite(spot) or spot <= 0.0:
+            raise ValueError("spot must be finite and positive")
+        if not np.isfinite(forward_spot_elasticity):
+            raise ValueError("forward_spot_elasticity must be finite")
+        return (
+            -forward_spot_elasticity
+            * self.dvol_dk(k, tau)
+            / spot
+        )

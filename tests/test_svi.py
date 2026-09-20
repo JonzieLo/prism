@@ -108,6 +108,46 @@ def test_svi_derivatives_match_finite_differences():
             abs=1e-7,
         )
 
+def test_svi_volatility_dynamics_match_finite_differences():
+    parameters = SVIParameters(0.02, 0.10, -0.30, 0.01, 0.20)
+    tau = 0.50
+    forward = 65_000.0
+    spot = 64_000.0
+    strike = 70_000.0
+    k = math.log(strike / forward)
+    h_k = 1e-5
+    h_forward = 1.0
+    h_spot = 1.0
+
+    fd_k = (
+        parameters.implied_vol(k + h_k, tau)
+        - parameters.implied_vol(k - h_k, tau)
+    ) / (2.0 * h_k)
+    assert parameters.dvol_dk(k, tau) == pytest.approx(
+        fd_k,
+        rel=1e-8,
+        abs=2e-10,
+    )
+
+    def vol_from_forward(value: float) -> float:
+        return float(parameters.implied_vol(math.log(strike / value), tau))
+
+    fd_forward = (
+        vol_from_forward(forward + h_forward) - vol_from_forward(forward - h_forward)
+        ) / (2.0 * h_forward)
+    assert parameters.dvol_dforward_fixed_strike(k,forward,tau,) == pytest.approx(fd_forward, rel=1e-8, abs=1e-12)
+
+    carry_ratio = forward / spot
+
+    def vol_from_spot(value: float) -> float:
+        moved_forward = carry_ratio * value
+        return float(parameters.implied_vol(math.log(strike / moved_forward),tau))
+
+    fd_spot = (
+        vol_from_spot(spot + h_spot)- vol_from_spot(spot - h_spot)
+        ) / (2.0 * h_spot)
+    assert parameters.dvol_dspot_fixed_strike(k,spot,tau,) == pytest.approx(fd_spot, rel=1e-8, abs=1e-12)
+
 
 @pytest.mark.parametrize(
     "parameters",
