@@ -14,21 +14,8 @@ from .results import CalibratedSmile
 logger = logging.getLogger(__name__)
 
 DAYS_PER_YEAR = 365.0
-
-# Relative, not absolute. w grows roughly linearly in tau, so an absolute
-# tolerance is the wrong scale at long expiries, and -1e-14 is float noise
-# rather than an arbitrage.
 CALENDAR_ARBITRAGE_RELATIVE_TOLERANCE = -1e-8
-
-# Raw SVI has 5 free parameters. Fitting 5 points gives an exactly determined
-# system, RMSE ~ 0, and a completely uninformative fit-quality signal. Keep
-# meaningful degrees of freedom.
 DEFAULT_MINIMUM_OBSERVATIONS = 10
-
-
-# ======================================================================
-# Fitting
-# ======================================================================
 
 
 def fit_snapshot_term_structure(
@@ -38,13 +25,6 @@ def fit_snapshot_term_structure(
     min_observations: int = DEFAULT_MINIMUM_OBSERVATIONS,
     require_butterfly_free: bool = True,
 ) -> list[CalibratedSmile]:
-    """Calibrate one raw-SVI slice per expiry, sorted by tau.
-
-    Unlike the previous version this logs every rejection and refuses to
-    admit a static-arbitrageable slice into the term structure by default.
-    Downstream calendar and dynamics calculations are meaningless on a
-    slice that already fails butterfly.
-    """
     if min_observations <= 5:
         raise ValueError(
             "min_observations must exceed the 5 free SVI parameters; "
@@ -88,15 +68,8 @@ def common_k_grid(
     k_min = max(near.observed_k_min, far.observed_k_min)
     k_max = min(near.observed_k_max, far.observed_k_max)
     if k_min >= k_max:
-        raise ValueError(
-            "Calibrated smiles do not share an observed log-moneyness range"
-        )
+        raise ValueError("Calibrated smiles do not share an observed log-moneyness range")
     return np.linspace(k_min, k_max, n_points)
-
-
-# ======================================================================
-# Time dynamics:  d(sigma) / d(tau)
-# ======================================================================
 
 
 @dataclass(frozen=True)
@@ -114,11 +87,6 @@ class TimeDerivativePoint:
 
 @dataclass(frozen=True)
 class TimeDerivativeSegment:
-    """Time dynamics between two adjacent calibrated expiries.
-
-    tau_near / tau_far live here rather than on every grid point.
-    """
-
     expiry_near: int
     expiry_far: int
     tau_near: float
@@ -160,36 +128,6 @@ def time_derivative(
     n_points: int = 201,
     evaluate_at: str = "near",
 ) -> TimeDerivativeSegment:
-    """Analytic d(sigma)/d(tau) from a calendar-arb-preserving interpolation.
-
-    Raw SVI is fitted per slice and carries no tau dependence, so there is
-    no native time derivative. Interpolating total variance LINEARLY in tau
-    at fixed k is the interpolation that preserves calendar-arbitrage
-    freeness, and it gives
-
-        w(k, tau) = w_near(k) + (tau - tau_near) * dw_dtau
-        dw_dtau   = (w_far(k) - w_near(k)) / (tau_far - tau_near)
-
-    and, since sigma = sqrt(w / tau),
-
-        d(sigma)/d(tau) =  dw_dtau / (2 sigma tau)  -  sigma / (2 tau)
-                           ^^^^^^^^^^^^^^^^^^^^^^     ^^^^^^^^^^^^^^^
-                           accumulation               annualisation
-
-    The two terms oppose each other. As expiry approaches you give back
-    accumulated variance (first term, normally positive, so vol falls) but
-    you divide by a smaller tau (second term, negative, so vol rises).
-    Which dominates is k- and tau-dependent, and collapsing them into one
-    secant throws away exactly the thing worth looking at.
-
-    This supersedes the previous `calendar_slope`, which returned an
-    unattributed secant (sigma_far - sigma_near)/dtau evaluated at no
-    particular tau.
-
-    Note the convention: dvol_dtau is with respect to INCREASING maturity.
-    `vol_points_per_calendar_day` is the negation, i.e. the vol drift you
-    experience holding the position for one more day.
-    """
     if far.tau <= near.tau:
         raise ValueError("`far` must have a strictly greater tau than `near`")
     if evaluate_at not in {"near", "far", "midpoint"}:
@@ -249,11 +187,6 @@ def build_time_derivative_segments(
     n_points: int = 201,
     evaluate_at: str = "near",
 ) -> list[TimeDerivativeSegment]:
-    """Adjacent-pair time dynamics, skipping pairs with no shared k range.
-
-    The previous code let a ValueError from common_k_grid propagate out of
-    the plotting function, destroying every panel for every pair.
-    """
     segments: list[TimeDerivativeSegment] = []
     for near, far in zip(smiles, smiles[1:]):
         try:
@@ -270,11 +203,6 @@ def build_time_derivative_segments(
                 error,
             )
     return segments
-
-
-# ======================================================================
-# Spot dynamics:  d(sigma) / d(ln S)
-# ======================================================================
 
 
 @dataclass(frozen=True)
@@ -320,14 +248,6 @@ def spot_backbone(
     n_points: int = 201,
     shock: float = 0.01,
 ) -> SpotBackbone:
-    """Fixed-strike vol response to a spot move, under a stickiness rule.
-
-    `vol_points_per_1pct_spot` is the IV move alone. It is a scalar multiple
-    of d(sigma)/dk for ANY translation-family stickiness rule, so on its own
-    it duplicates the skew panel. The quantity that carries independent
-    information is `vol_pnl_per_1pct_spot_bp_of_forward` = vega * d(sigma),
-    because vega peaks near ATM and dies in the wings.
-    """
     k_grid = np.linspace(smile.observed_k_min, smile.observed_k_max, n_points)
     parameters = smile.parameters
 
@@ -365,27 +285,12 @@ def spot_backbone(
     )
 
 
-# ======================================================================
-# Empirical backbone: measure R instead of assuming it
-# ======================================================================
-
 
 def dw_dtau_between(
     near: CalibratedSmile,
     far: CalibratedSmile,
 ) -> Callable[[NDArray[np.float64]], NDArray[np.float64]]:
-    """d(w)/d(tau) at fixed k, as a callable, from two expiries of ONE snapshot.
-
-    Returns a function rather than an array so the consumer evaluates it on
-    its own k grid. `measure_backbone` works on the fixed-strike overlap of
-    two SNAPSHOTS, while a TimeDerivativeSegment is gridded on the overlap of
-    two EXPIRIES; passing the segment's array across that boundary lines up
-    equal-length vectors sampled at different k.
-
-    The linear-in-tau reading of w this implies is the same one
-    `time_derivative` uses, and is the interpolation that preserves calendar
-    arbitrage freeness.
-    """
+    """d(w)/d(tau) at fixed k"""
     if far.tau <= near.tau:
         raise ValueError("`far` must have a strictly greater tau than `near`")
     d_tau = far.tau - near.tau
@@ -423,15 +328,6 @@ class MeasuredBackbone:
     tau_late: float
     vega_weighted_stickiness_ratio: float
     least_squares_stickiness_ratio: float
-    """Vega-weighted least-squares fit of the whole R(k) curve.
-
-    Prefer this to the pointwise average. R(k) is recovered by dividing by
-    d(sigma)/dk, which vanishes at the smile minimum -- and on a BTC fit that
-    minimum sits near ATM, which is exactly where the vega weights are
-    largest. The pointwise average therefore puts its heaviest weight on its
-    worst-conditioned points. The regression form never divides by the skew.
-    """
-    identification_note: str
     points: list[MeasuredBackbonePoint]
 
 
@@ -449,28 +345,10 @@ def measure_backbone(
 ) -> MeasuredBackbone:
     """Back out the realised skew-stickiness ratio from two snapshots.
 
-    `early` and `late` must be calibrations of the SAME expiry at two
-    different snapshot times, so tau_late < tau_early.
-
-    Decomposition, at a FIXED strike K:
-
+    At a fixed strike K:
         d(sigma_K) = (d sigma / d ln S) * d(ln S)
                    + (d sigma / d tau)  * d(tau)
                    + residual
-
-    Two snapshots give one equation and two unknowns. This function
-    identifies the spot term by SUBTRACTING a time term computed from
-    `dw_dtau`, which should come from the term structure of the EARLY
-    snapshot (build_time_derivative_segments on the early snapshot's
-    smiles, then take dw_dtau for the segment starting at this expiry).
-
-    If dw_dtau is None the fallback assumes total variance is frozen in k,
-    i.e. dw_dtau = 0, so all of the time effect is annualisation. That is
-    almost certainly wrong and the returned identification_note says so.
-
-    The result is an identification, not a measurement. It becomes a real
-    estimate only with many snapshots and a regression of fixed-strike vol
-    changes on d(ln S) and d(tau).
     """
     if late.expiration_timestamp != early.expiration_timestamp:
         raise ValueError("Both smiles must be the same expiry")
@@ -479,10 +357,7 @@ def measure_backbone(
 
     d_ln_spot = float(np.log(late.forward / early.forward))
     if abs(d_ln_spot) < 1e-6:
-        raise ValueError(
-            "Forwards are effectively unchanged between snapshots; the "
-            "spot component is not identified"
-        )
+        raise ValueError("Forwards are unchanged between snapshots; spot component is not identified")
     d_tau = late.tau - early.tau
 
     k_early = np.linspace(
@@ -493,7 +368,6 @@ def measure_backbone(
     if k_early[0] >= k_early[-1]:
         raise ValueError("Snapshots share no common fixed-strike range")
 
-    # Same strike, expressed in each snapshot's own forward coordinates.
     k_late = k_early - forward_spot_elasticity * d_ln_spot
 
     sigma_early = early.parameters.implied_vol(k_early, early.tau)
@@ -502,40 +376,13 @@ def measure_backbone(
 
     w_early = early.parameters.total_variance(k_early)
     if dw_dtau is None:
-        dw_dtau_array = np.zeros_like(k_early)
-        note = (
-            "dw_dtau not supplied: assumed 0 (total variance frozen in k). "
-            "The time component is annualisation only and the implied R is "
-            "biased. Supply dw_dtau from the early snapshot's term structure."
-        )
+        dw_dtau_array = np.zeros_like(k_early) #assume - dw_dtau
     elif callable(dw_dtau):
-        dw_dtau_array = np.asarray(dw_dtau(k_early), dtype=float)
+        dw_dtau_array = np.asarray(dw_dtau(k_early), dtype=float) #Time component removed 
         if dw_dtau_array.shape != k_early.shape:
-            raise ValueError(
-                "dw_dtau callable returned shape "
-                f"{dw_dtau_array.shape}, expected {k_early.shape}"
-            )
-        note = (
-            "Time component removed using dw_dtau from the early snapshot's "
-            "term structure. Two snapshots identify, they do not measure."
-        )
+            raise ValueError(f"dw_dtau callable returned shape {dw_dtau_array.shape}, expected {k_early.shape}")
     else:
-        # An array is positional on THIS function's k grid, which is the
-        # fixed-strike overlap of the two snapshots -- NOT the grid of a
-        # TimeDerivativeSegment, which is the overlap of two expiries in one
-        # snapshot. Those two grids have different endpoints, so handing over
-        # `[p.dw_dtau for p in segment.points]` lines up 201 values against
-        # 201 different k. Prefer `dw_dtau_between(near, far)`, which is
-        # evaluated here and cannot be misaligned.
-        dw_dtau_array = np.broadcast_to(
-            np.asarray(dw_dtau, dtype=float), k_early.shape
-        )
-        note = (
-            "Time component removed using a POSITIONAL dw_dtau array. This "
-            "assumes the array was sampled on this function's own k grid; "
-            "an array taken from a TimeDerivativeSegment is on a different "
-            "grid and is silently misaligned. Prefer dw_dtau_between()."
-        )
+        dw_dtau_array = np.broadcast_to(np.asarray(dw_dtau, dtype=float), k_early.shape) #Time component removed using positional dw_dtau
 
     accumulation = dw_dtau_array / (2.0 * sigma_early * early.tau)
     annualisation = -sigma_early / (2.0 * early.tau)
@@ -562,10 +409,7 @@ def measure_backbone(
         np.nansum(weights * np.nan_to_num(implied_r)) / weights.sum()
     )
 
-    # Weighted least squares on the relation itself,
-    #     dvol_spot = eps * (R - 1) * dvol_dk * d(lnS),
-    # solved for R. Unlike the pointwise average this never divides by the
-    # skew, so a flat patch contributes little information instead of a pole.
+    # dvol_spot = eps * (R - 1) * dvol_dk * d(lnS),
     design = forward_spot_elasticity * dvol_dk_early * d_ln_spot
     least_squares_denominator = float(np.sum(vega * design * design))
     least_squares_r = (
@@ -596,6 +440,5 @@ def measure_backbone(
         tau_late=late.tau,
         vega_weighted_stickiness_ratio=weighted_r,
         least_squares_stickiness_ratio=least_squares_r,
-        identification_note=note,
         points=points,
     )
