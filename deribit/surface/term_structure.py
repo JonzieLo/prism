@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -43,7 +42,7 @@ def fit_snapshot_term_structure(
             continue
         try:
             smile = calibrate_svi_slice(
-                items, number_of_starts=number_of_starts
+                items, number_of_starts=number_of_starts, require_butterfly_free=require_butterfly_free
             )
         except Exception:
             logger.exception("expiry %s rejected: calibration failed", expiry_ts)
@@ -68,7 +67,9 @@ def common_k_grid(
     k_min = max(near.observed_k_min, far.observed_k_min)
     k_max = min(near.observed_k_max, far.observed_k_max)
     if k_min >= k_max:
-        raise ValueError("Calibrated smiles do not share an observed log-moneyness range")
+        raise ValueError(
+            "Calibrated smiles do not share an observed log-moneyness range"
+        )
     return np.linspace(k_min, k_max, n_points)
 
 
@@ -285,28 +286,6 @@ def spot_backbone(
     )
 
 
-
-def dw_dtau_between(
-    near: CalibratedSmile,
-    far: CalibratedSmile,
-) -> Callable[[NDArray[np.float64]], NDArray[np.float64]]:
-    """d(w)/d(tau) at fixed k"""
-    if far.tau <= near.tau:
-        raise ValueError("`far` must have a strictly greater tau than `near`")
-    d_tau = far.tau - near.tau
-    near_parameters = near.parameters
-    far_parameters = far.parameters
-
-    def _dw_dtau(k: NDArray[np.float64]) -> NDArray[np.float64]:
-        return (
-            far_parameters.total_variance(k)
-            - near_parameters.total_variance(k)
-        ) / d_tau
-
-    return _dw_dtau
-
-
-
 @dataclass(frozen=True)
 class MeasuredBackbonePoint:
     log_moneyness_early: float
@@ -327,7 +306,7 @@ class MeasuredBackbone:
     tau_early: float
     tau_late: float
     vega_weighted_stickiness_ratio: float
-    least_squares_stickiness_ratio: float
+    identification_note: str = ''
     points: list[MeasuredBackbonePoint]
 
 
@@ -335,20 +314,35 @@ def measure_backbone(
     early: CalibratedSmile,
     late: CalibratedSmile,
     *,
-    dw_dtau: Callable[[NDArray[np.float64]], NDArray[np.float64]]
-    | NDArray[np.float64]
-    | float
-    | None = None,
+    dw_dtau: NDArray[np.float64] | float | None = None,
     forward_spot_elasticity: float = 1.0,
     n_points: int = 201,
     minimum_abs_dvol_dk: float = 1e-3,
 ) -> MeasuredBackbone:
     """Back out the realised skew-stickiness ratio from two snapshots.
 
-    At a fixed strike K:
+    `early` and `late` must be calibrations of the SAME expiry at two
+    different snapshot times, so tau_late < tau_early.
+
+    Decomposition, at a FIXED strike K:
+
         d(sigma_K) = (d sigma / d ln S) * d(ln S)
                    + (d sigma / d tau)  * d(tau)
                    + residual
+
+    Two snapshots give one equation and two unknowns. This function
+    identifies the spot term by SUBTRACTING a time term computed from
+    `dw_dtau`, which should come from the term structure of the EARLY
+    snapshot (build_time_derivative_segments on the early snapshot's
+    smiles, then take dw_dtau for the segment starting at this expiry).
+
+    If dw_dtau is None the fallback assumes total variance is frozen in k,
+    i.e. dw_dtau = 0, so all of the time effect is annualisation. That is
+    almost certainly wrong and the returned identification_note says so.
+
+    The result is an identification, not a measurement. It becomes a real
+    estimate only with many snapshots and a regression of fixed-strike vol
+    changes on d(ln S) and d(tau).
     """
     if late.expiration_timestamp != early.expiration_timestamp:
         raise ValueError("Both smiles must be the same expiry")
@@ -357,7 +351,10 @@ def measure_backbone(
 
     d_ln_spot = float(np.log(late.forward / early.forward))
     if abs(d_ln_spot) < 1e-6:
-        raise ValueError("Forwards are unchanged between snapshots; spot component is not identified")
+        raise ValueError(
+            "Forwards are effectively unchanged between snapshots; the "
+            "spot component is not identified"
+        )
     d_tau = late.tau - early.tau
 
     k_early = np.linspace(
@@ -368,6 +365,7 @@ def measure_backbone(
     if k_early[0] >= k_early[-1]:
         raise ValueError("Snapshots share no common fixed-strike range")
 
+    # Same strike, expressed in each snapshot's own forward coordinates.
     k_late = k_early - forward_spot_elasticity * d_ln_spot
 
     sigma_early = early.parameters.implied_vol(k_early, early.tau)
@@ -376,13 +374,20 @@ def measure_backbone(
 
     w_early = early.parameters.total_variance(k_early)
     if dw_dtau is None:
-        dw_dtau_array = np.zeros_like(k_early) #assume - dw_dtau
-    elif callable(dw_dtau):
-        dw_dtau_array = np.asarray(dw_dtau(k_early), dtype=float) #Time component removed 
-        if dw_dtau_array.shape != k_early.shape:
-            raise ValueError(f"dw_dtau callable returned shape {dw_dtau_array.shape}, expected {k_early.shape}")
+        dw_dtau_array = np.zeros_like(k_early)
+        note = (
+            "dw_dtau not supplied: assumed 0 (total variance frozen in k). "
+            "The time component is annualisation only and the implied R is "
+            "biased. Supply dw_dtau from the early snapshot's term structure."
+        )
     else:
-        dw_dtau_array = np.broadcast_to(np.asarray(dw_dtau, dtype=float), k_early.shape) #Time component removed using positional dw_dtau
+        dw_dtau_array = np.broadcast_to(
+            np.asarray(dw_dtau, dtype=float), k_early.shape
+        )
+        note = (
+            "Time component removed using dw_dtau from the early snapshot's "
+            "term structure. Two snapshots identify, they do not measure."
+        )
 
     accumulation = dw_dtau_array / (2.0 * sigma_early * early.tau)
     annualisation = -sigma_early / (2.0 * early.tau)
@@ -409,15 +414,6 @@ def measure_backbone(
         np.nansum(weights * np.nan_to_num(implied_r)) / weights.sum()
     )
 
-    # dvol_spot = eps * (R - 1) * dvol_dk * d(lnS),
-    design = forward_spot_elasticity * dvol_dk_early * d_ln_spot
-    least_squares_denominator = float(np.sum(vega * design * design))
-    least_squares_r = (
-        1.0 + float(np.sum(vega * design * dvol_spot)) / least_squares_denominator
-        if least_squares_denominator > 0.0
-        else float("nan")
-    )
-
     points = [
         MeasuredBackbonePoint(
             log_moneyness_early=float(k_early[i]),
@@ -439,6 +435,6 @@ def measure_backbone(
         tau_early=early.tau,
         tau_late=late.tau,
         vega_weighted_stickiness_ratio=weighted_r,
-        least_squares_stickiness_ratio=least_squares_r,
+        identification_note=note,
         points=points,
     )
