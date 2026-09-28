@@ -1,5 +1,4 @@
 import argparse
-import asyncio
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7,26 +6,9 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from deribit.config import SnapshotUniversalConfig
 from deribit.forward_curve import build_forward_curve
-from deribit.store import SnapshotStore
+from deribit.store import SnapshotStore, fetch_and_save_snapshot
 from deribit.surface.raw_iv import SURFACE_MODEL_NAMES,RawIVResult,build_raw_iv_points
-from deribit.ws_client import DeribitWSClient
-
-
-async def fetch_snapshot(
-    store: SnapshotStore,
-    currency: str,
-    testnet: bool,
-) -> int:
-    client = DeribitWSClient(testnet=testnet)
-    try:
-        snapshot = await client.fetch_snapshot_data(
-            SnapshotUniversalConfig(currency=currency)
-        )
-    finally:
-        await client.close()
-    return store.save_snapshot(currency, snapshot)
 
 
 def plot_raw_iv(
@@ -216,9 +198,7 @@ if __name__ == "__main__":
     store = SnapshotStore(args.db)
 
     if args.fetch:
-        snapshot_id = asyncio.run(
-            fetch_snapshot(store, args.currency, args.testnet)
-        )
+        snapshot_id = fetch_and_save_snapshot(store, args.currency, args.testnet)
     elif args.snapshot_id is not None:
         snapshot_id = args.snapshot_id
     else:

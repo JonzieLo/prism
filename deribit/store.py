@@ -1,8 +1,11 @@
 import json
 import sqlite3
 import time
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
+from deribit.config import SnapshotUniversalConfig
+from deribit.ws_client import DeribitWSClient
 
 @dataclass(frozen=True)
 class SnapshotMetadata:
@@ -196,3 +199,26 @@ class SnapshotStore:
         with self._get_conn() as conn:
             rows = conn.execute(query, parameters).fetchall()
         return [SnapshotMetadata(*row) for row in rows]
+
+
+async def fetch_and_save_snapshot_async(
+    store: SnapshotStore,
+    currency: str = "BTC",
+    testnet: bool = False,
+) -> int:
+    client = DeribitWSClient(testnet=testnet)
+    try:
+        await client.connect()
+        raw_data = await client.fetch_snapshot_data(
+            SnapshotUniversalConfig(currency=currency)
+        )
+    finally:
+        await client.close()
+    return store.save_snapshot(currency, raw_data)
+
+def fetch_and_save_snapshot(
+    store: SnapshotStore,
+    currency: str = "BTC",
+    testnet: bool = False,
+) -> int:
+    return asyncio.run(fetch_and_save_snapshot_async(store, currency=currency, testnet=testnet))

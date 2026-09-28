@@ -163,3 +163,59 @@ class QuotingSimulator:
         )
         
         return fill
+
+
+if __name__ == "__main__":
+    import argparse
+    from deribit.store import SnapshotStore, fetch_and_save_snapshot
+    from deribit.surface.calibration import calibrate_svi_slice
+    from deribit.surface.snapshot_loader import load_snapshot_observations
+
+    parser = argparse.ArgumentParser(description="Run M7 Live Quoting Simulator.")
+    parser.add_argument("--db", default="snapshots.db")
+    parser.add_argument("--currency", default="BTC")
+    parser.add_argument("--snapshot-id", type=int)
+    parser.add_argument("--fetch", action="store_true", help="Fetch a fresh live snapshot before quoting")
+    parser.add_argument("--prod", action="store_true", help="Use Deribit Production (mainnet) for live fetch")
+    args = parser.parse_args()
+
+    store = SnapshotStore(args.db)
+
+    if args.fetch:
+        print(f"Fetching live snapshot from Deribit ({'Prod' if args.prod else 'Testnet'})...")
+        snap_id = fetch_and_save_snapshot(store, currency=args.currency, testnet=not args.prod)
+    else:
+        snap_id = args.snapshot_id or store.latest_snapshot_id(args.currency)
+
+    if not snap_id:
+        print("No snapshots found. Run with --fetch to capture one.")
+        exit(1)
+
+    loaded = load_snapshot_observations(store, snap_id)
+    simulator = QuotingSimulator(config=QuoteConfig(inventory_gamma=0.002))
+
+    print("=" * 80)
+    print(f"=== LIVE QUOTING SIMULATOR (Snapshot #{snap_id}) ===")
+    print("=" * 80)
+
+    for expiry, obs_list in loaded.observations_by_expiry.items():
+        smile = calibrate_svi_slice(obs_list)
+
+        for obs in obs_list[:3]:
+            quote = simulator.generate_quote(
+                smile=smile,
+                strike=obs.strike,
+                option_type=obs.option_type,
+                instrument_name=obs.instrument_name,
+                market_bid_usd=obs.bid_usd,
+                market_ask_usd=obs.ask_usd,
+            )
+
+            if quote is None:
+                continue
+
+            print(f"\nInstrument:   {quote.instrument_name}")
+            print(f"  Fair Value: ${quote.tv_usd:,.2f} | Half-Width: ${quote.half_width_usd:,.2f}")
+            print(f"  Market:     ${quote.market_bid_usd:,.2f} / ${quote.market_ask_usd:,.2f}")
+            print(f"  Shaded:     ${quote.shaded_bid_usd:,.2f} / ${quote.shaded_ask_usd:,.2f}")
+            print(f"  Bid Rel:    {quote.bid_relation:<8} | Ask Rel: {quote.ask_relation:<8} | Crossed: {quote.is_crossed}")

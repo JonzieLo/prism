@@ -1,7 +1,4 @@
 import argparse
-import asyncio
-import gzip
-import json
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -17,7 +14,6 @@ from deribit.chain import (
     option_chain_from_snapshot,
     select_expiry,
 )
-from deribit.config import SnapshotUniversalConfig
 from deribit.pricing import (
     BachelierModel,
     BinomialModel,
@@ -25,8 +21,7 @@ from deribit.pricing import (
     from_forward_greeks,
 )
 from deribit.hygiene import Use, evaluate_leg
-from deribit.store import SnapshotStore
-from deribit.ws_client import DeribitWSClient
+from deribit.store import SnapshotStore, fetch_and_save_snapshot
 
 
 @dataclass(frozen=True)
@@ -43,20 +38,6 @@ class DeltaRow:
     issue_codes: tuple[str,...]
     bid_delta: float | None = None
     ask_delta: float | None = None
-
-
-async def fetch_snapshot(
-    store: SnapshotStore,
-    currency: str,
-    testnet: bool,
-) -> int:
-    config = SnapshotUniversalConfig(currency=currency)
-    client = DeribitWSClient(testnet=testnet)
-    try:
-        snapshot = await client.fetch_snapshot_data(config)
-    finally:
-        await client.close()
-    return store.save_snapshot(currency, snapshot)
 
 
 def build_delta_rows(
@@ -308,7 +289,7 @@ def plot_delta_rows(
 
         bottom.axhline(0.0, color="#7A7974", lw=0.8)
         bottom.set_xlabel("Strike K (USD)")
-        bottom.set_ylabel("Base-coin exposure")
+        bottom.set_ylabel("NTD (BTC per 1-BTC contract)")
         bottom.set_title(
             "Inverse delta subtracts the coin option premium\n"
             r"$\mathrm{NTD}=\Delta_{\mathrm{traditional}}-c"
@@ -393,9 +374,7 @@ if __name__ == "__main__":
     store = SnapshotStore(args.db)
 
     if args.fetch:
-        snapshot_id = asyncio.run(
-            fetch_snapshot(store, args.currency, args.testnet)
-        )
+        snapshot_id = fetch_and_save_snapshot(store, args.currency, args.testnet)
         snapshot = store.load_snapshot(snapshot_id)
     elif args.snapshot_id is not None:
         snapshot_id = args.snapshot_id
