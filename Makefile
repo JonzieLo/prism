@@ -1,6 +1,7 @@
-.PHONY: all test integration snapshot figure forwards forward_curve segmentation raw_surface svi_smile
+.PHONY: all test integration snapshot figure forwards forward_curve segmentation raw_surface svi_smile merton
 
-PYTHON ?= python3
+PYTHON ?= .venv/Scripts/python.exe
+# PYTHON ?= python3
 # PYTHON := .venv/bin/python
 DB ?= snapshots.db
 OUTPUT ?= figs/delta_vs_strike.png
@@ -9,7 +10,7 @@ RAW_SURFACE_OUTPUT ?= figs/raw_vol_smiles.png
 SURFACE_MODEL ?= black76
 SVI_OUTPUT ?= figs/svi_smile.png
 
-all: test integration snapshot forwards forward_curve segmentation
+all: test integration snapshot forwards forward_curve segmentation merton
 
 test:
 	$(PYTHON) -m pytest -q

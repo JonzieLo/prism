@@ -3,6 +3,7 @@ from .black_scholes import Black76Model, BlackScholesModel
 from .bachelier import BachelierModel
 from .binomial import BinomialModel
 from .inverse import InverseGreeks, from_forward_greeks
+from .merton import MertonModel, MertonJumpParams 
 
 
 __all__ = [
@@ -15,4 +16,6 @@ __all__ = [
     "BinomialModel",
     "InverseGreeks",
     "from_forward_greeks",
+    "MertonModel",
+    "MertonJumpParams",
 ]

@@ -8,20 +8,7 @@ from deribit.surface.calibration import calibrate_svi_slice
 from deribit.surface.observations import SurfaceObservation
 from deribit.surface.results import ArbitrageReport, CalibratedSmile
 from deribit.surface.svi import SVIParameters
-from deribit.surface.term_structure import (
-    build_time_derivative_segments,
-    common_k_grid,
-    dw_dtau_between,
-    fit_snapshot_term_structure,
-    measure_backbone,
-    spot_backbone,
-    time_derivative,
-)
-
-
-# ======================================================================
-# Builders
-# ======================================================================
+from deribit.surface.term_structure import *
 
 
 def _smile(
@@ -33,11 +20,6 @@ def _smile(
     k_min: float = -0.40,
     k_max: float = 0.40,
 ) -> CalibratedSmile:
-    """A CalibratedSmile built directly, bypassing the optimiser.
-
-    The analytic identities under test hold exactly, so injecting calibration
-    noise would only force loose tolerances and hide real errors.
-    """
     return CalibratedSmile(
         snapshot_id=1,
         underlying_index="BTC-TEST",
@@ -123,7 +105,6 @@ def _synthetic_expiry_observations(
 
 
 def _scaled(parameters: SVIParameters, factor: float, *, shift: float = 0.0):
-    """Scale total variance by `factor` and translate the smile by `shift` in k."""
     return SVIParameters(
         a=parameters.a * factor,
         b=parameters.b * factor,
@@ -136,11 +117,6 @@ def _scaled(parameters: SVIParameters, factor: float, *, shift: float = 0.0):
 _BASE = SVIParameters(a=0.02, b=0.10, rho=-0.30, m=0.01, eta=0.20)
 
 
-# ======================================================================
-# SVIParameters additions
-# ======================================================================
-
-
 def test_minimum_total_variance_k_is_where_the_slope_vanishes():
     for parameters in (
         _BASE,
@@ -149,15 +125,12 @@ def test_minimum_total_variance_k_is_where_the_slope_vanishes():
     ):
         k_star = parameters.minimum_total_variance_k
         assert parameters.first_derivative(k_star) == pytest.approx(0.0, abs=1e-12)
-        # And it really is the minimum value, matching the closed form.
         assert parameters.total_variance(k_star) == pytest.approx(
             parameters.minimum_total_variance
         )
 
 
 def test_minimum_total_variance_k_differs_materially_from_m():
-    # The reading "decreasing m shifts the minimum left" treats m as the
-    # minimum. At a realistic BTC rho it is off by a wide margin.
     parameters = SVIParameters(0.02, 0.10, -0.30, 0.031, 0.20)
     assert parameters.minimum_total_variance_k == pytest.approx(0.0939, abs=1e-3)
     assert abs(parameters.minimum_total_variance_k - parameters.m) > 0.06
@@ -170,7 +143,6 @@ def test_atm_shape_diagnostics():
     assert _BASE.atm_curvature == pytest.approx(
         float(_BASE.second_derivative(0.0))
     )
-    # Peak curvature b/eta occurs at k = m and bounds the ATM value.
     assert _BASE.atm_curvature <= _BASE.b / _BASE.eta + 1e-12
     assert float(_BASE.second_derivative(_BASE.m)) == pytest.approx(
         _BASE.b / _BASE.eta
@@ -202,7 +174,6 @@ def test_vega_discount_factor_scales_linearly():
 
 
 def test_dvol_dlnspot_is_zero_under_sticky_strike():
-    # R = 1 is the definition of sticky strike: fixed-strike vols do not move.
     response = _BASE.dvol_dlnspot_fixed_strike(
         np.linspace(-0.3, 0.3, 11), 0.25, skew_stickiness_ratio=1.0
     )
@@ -217,11 +188,7 @@ def test_dvol_dlnspot_is_minus_skew_under_sticky_delta():
     assert sticky_delta == pytest.approx(-_BASE.dvol_dk(k, 0.25))
 
 
-# ======================================================================
 # Time dynamics
-# ======================================================================
-
-
 def test_time_derivative_matches_finite_difference_of_the_interpolation():
     near = _smile(_BASE, tau=0.25)
     far = _smile(_scaled(_BASE, 2.4), tau=0.75, expiration_timestamp=1_900_000_000_000)
@@ -230,7 +197,7 @@ def test_time_derivative_matches_finite_difference_of_the_interpolation():
     arrays = segment.as_arrays()
     k = arrays["log_moneyness"]
 
-    # The interpolation the analytic derivative is taken of: w linear in tau.
+    # w linear in tau.
     w_near = near.parameters.total_variance(k)
     dw_dtau = arrays["dw_dtau"]
 
@@ -240,16 +207,12 @@ def test_time_derivative_matches_finite_difference_of_the_interpolation():
     h = 1e-7
     finite_difference = (sigma(near.tau + h) - sigma(near.tau - h)) / (2.0 * h)
     assert arrays["dvol_dtau"] == pytest.approx(finite_difference, rel=1e-6)
-
-    # The split must add back up to the whole.
     assert (
         arrays["accumulation_term"] + arrays["annualisation_term"]
     ) == pytest.approx(arrays["dvol_dtau"])
 
 
 def test_time_derivative_is_zero_when_the_vol_term_structure_is_flat():
-    # w scaled by exactly the tau ratio => identical sigma(k) at both
-    # maturities => no vol drift, despite total variance tripling.
     near = _smile(_BASE, tau=0.25)
     far = _smile(
         _scaled(_BASE, 3.0), tau=0.75, expiration_timestamp=1_900_000_000_000

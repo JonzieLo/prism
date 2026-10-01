@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-
 import numpy as np
 from numpy.typing import NDArray
 
@@ -307,8 +306,18 @@ class MeasuredBackbone:
     tau_late: float
     vega_weighted_stickiness_ratio: float
     identification_note: str = ''
-    points: list[MeasuredBackbonePoint]
+    points: list[MeasuredBackbonePoint] = ()
 
+def dw_dtau_between(near: CalibratedSmile, far: CalibratedSmile):
+    d_tau = far.tau - near.tau
+    if d_tau <= 0:
+        raise ValueError("far.tau must be strictly greater than near.tau")
+    def _dw_dtau(k):
+        k_arr = np.asarray(k, dtype=float)
+        w_near = near.parameters.total_variance(k_arr)
+        w_far = far.parameters.total_variance(k_arr)
+        return (w_far - w_near) / d_tau
+    return _dw_dtau
 
 def measure_backbone(
     early: CalibratedSmile,
@@ -319,30 +328,13 @@ def measure_backbone(
     n_points: int = 201,
     minimum_abs_dvol_dk: float = 1e-3,
 ) -> MeasuredBackbone:
-    """Back out the realised skew-stickiness ratio from two snapshots.
-
+    """
+    Back out the realised skew-stickiness ratio from two snapshots.
     `early` and `late` must be calibrations of the SAME expiry at two
     different snapshot times, so tau_late < tau_early.
 
     Decomposition, at a FIXED strike K:
-
-        d(sigma_K) = (d sigma / d ln S) * d(ln S)
-                   + (d sigma / d tau)  * d(tau)
-                   + residual
-
-    Two snapshots give one equation and two unknowns. This function
-    identifies the spot term by SUBTRACTING a time term computed from
-    `dw_dtau`, which should come from the term structure of the EARLY
-    snapshot (build_time_derivative_segments on the early snapshot's
-    smiles, then take dw_dtau for the segment starting at this expiry).
-
-    If dw_dtau is None the fallback assumes total variance is frozen in k,
-    i.e. dw_dtau = 0, so all of the time effect is annualisation. That is
-    almost certainly wrong and the returned identification_note says so.
-
-    The result is an identification, not a measurement. It becomes a real
-    estimate only with many snapshots and a regression of fixed-strike vol
-    changes on d(ln S) and d(tau).
+        d(sigma_K) = (d sigma / d ln S) * d(ln S) + (d sigma / d tau)  * d(tau) + residual
     """
     if late.expiration_timestamp != early.expiration_timestamp:
         raise ValueError("Both smiles must be the same expiry")
