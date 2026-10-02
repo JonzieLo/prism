@@ -7,10 +7,11 @@ from deribit.surface.results import CalibratedSmile
 
 @dataclass(frozen=True)
 class QuoteConfig:
-    min_half_spread_bps: float = 5.0
+    min_half_width_usd: float = 4.30
+    target_half_vol_points: fload = 1.5
     rmse_weight: float = 1.0
     vega_decay_weight: float = 0.05
-    market_spread_weight: float = 0.35
+    market_spread_weight: float = 0.10
     inventory_gamma: float = 0.002
     max_inventory_vega: float = 50.0
 
@@ -66,17 +67,16 @@ class QuotingSimulator:
         Derives quote half-width in USD:
         w_half = BaseWidth + (RMSE_vol * Vega) + VolDecayPenalty + MarketSpreadFraction
         """
-        base_width = (self.config.min_half_spread_bps / 10000.0) * forward
+        vol_width_usd = vega * (self.config.target_half_vol_points / 100.0)
+        base_width = max(self.config.min_half_width_usd, vol_width_usd)
 
-        vol_rmse = rmse_total_variance / (2.0 * max(tau, 1e-4) * max(tv_vol, 1e-4))
+        vol_rmse = rmse_total_variance / (2.0 * max(tau, 1.0/365.0) * max(tv_vol, 0.1))
         fit_penalty = self.config.rmse_weight * vega * vol_rmse
-
-        vol_penalty = self.config.vega_decay_weight * vega * math.sqrt(max(tau, 1e-4))
         
         market_spread = max(0.0, market_ask_usd - market_bid_usd)
         mkt_penalty = self.config.market_spread_weight * market_spread
         
-        return base_width + fit_penalty + vol_penalty + mkt_penalty
+        return base_width + fit_penalty + mkt_penalty
 
     def generate_quote(
         self,
