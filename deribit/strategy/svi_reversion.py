@@ -11,9 +11,6 @@ Strategy Logic:
 5. Hedges residual delta using the traded future/forward.
 6. Evaluates PnL mark-to-market at the subsequent snapshot.
 """
-
-from __future__ import annotations
-
 from dataclasses import dataclass
 import math
 from typing import Dict, List, Optional
@@ -55,9 +52,12 @@ class SVIReversionStrategy:
         db_path: str = "snapshots.db",
         currency: str = "BTC",
         z_score_threshold: float = 1.0,  # Mispricing must exceed 1.0x half-spread
+        entry_threshold_bps: float | None = None,
         taker_fee_bps: float = 3.0,
         fut_fee_bps: float = 1.5,
         max_abs_k: float = 0.50,         # Focus on liquid near-the-money range
+        use_leave_one_out: bool = True,
+        **kwargs
     ):
         self.store = SnapshotStore(db_path)
         self.currency = currency
@@ -66,6 +66,7 @@ class SVIReversionStrategy:
         self.fut_fee_rate = fut_fee_bps / 10000.0
         self.max_abs_k = max_abs_k
         self.model = Black76Model()
+        self.use_leave_one_out = use_leave_one_out
 
     def run_backtest(self, snapshot_limit: int = 500) -> List[DislocationTrade]:
         snapshots = self.store.list_snapshots(currency=self.currency, limit=snapshot_limit)
@@ -80,6 +81,7 @@ class SVIReversionStrategy:
             snap_early = snapshots[i]
             snap_late = snapshots[i + 1]
 
+            print(f"[{i + 1}/{len(snapshots) - 1}] Evaluating Snapshot #{snap_early.snapshot_id} -> #{snap_late.snapshot_id}...")
             try:
                 obs_early = load_snapshot_observations(self.store, snap_early.snapshot_id, max_abs_k=self.max_abs_k)
                 snap_late_data = self.store.load_snapshot(snap_late.snapshot_id)

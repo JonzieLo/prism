@@ -8,9 +8,8 @@ def main():
     parser = argparse.ArgumentParser(description="Run SVI Dislocation Strategy Backtest.")
     parser.add_argument("--db", default="snapshots.db", help="SQLite database file")
     parser.add_argument("--currency", default="BTC", help="Base currency (BTC/ETH)")
-    parser.add_argument("--threshold-bps", type=float, default=15.0, help="Entry threshold in bps of forward")
+    parser.add_argument("--z-thresh", type=float, default=1.0, help="Entry threshold in multiples of half-spread")
     parser.add_argument("--limit", type=int, default=100, help="Max historical snapshot lookback limit")
-    parser.add_argument("--no-loo", action="store_true", help="Disable Leave-One-Out (LOO) fitting")
     parser.add_argument("--fetch", action="store_true", help="Fetch a fresh live snapshot before backtesting")
     parser.add_argument("--prod", action="store_true", help="Use Deribit Production (mainnet) for live fetch")
     args = parser.parse_args()
@@ -24,8 +23,8 @@ def main():
     strategy = SVIReversionStrategy(
         db_path=args.db,
         currency=args.currency,
-        entry_threshold_bps=args.threshold_bps,
-        use_leave_one_out=not args.no_loo,
+        z_score_threshold=args.z_thresh,
+        max_abs_k=0.50,
     )
 
     trades = strategy.run_backtest(snapshot_limit=args.limit)

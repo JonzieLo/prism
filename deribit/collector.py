@@ -54,8 +54,7 @@ class SnapshotCollectorDaemon:
         skew_ms = meta.server_skew_ms if meta and meta.server_skew_ms else 0.0
 
         logger.info(
-            "Saved Snapshot #%-4d | %s Index: $%,.2f | Options: %-3d | Futures: %-2d | Skew: %.1fms | Latency: %.1fms",
-            snapshot_id, self.currency, index_px, num_options, num_futures, skew_ms, latency_ms
+            f"Saved Snapshot #{snapshot_id:<4d} | {self.currency} Index: ${index_px:,.2f} | Options: {num_options:<3d} | Futures: {num_futures:<2d} | Skew: {skew_ms:.1f}ms | Latency: {latency_ms:.1f}ms"
         )
         return snapshot_id
 
@@ -69,6 +68,13 @@ class SnapshotCollectorDaemon:
         logger.info("Interval:     %d seconds (%0.1f minutes)", self.interval, self.interval / 60.0)
         logger.info("Destination:  %s", self.db_path)
         logger.info("=" * 75)
+
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, self.stop)
+            except (NotImplementedError, AttributeError):
+                pass
 
         while self.running:
             try:
@@ -99,16 +105,8 @@ def main():
         prod=args.prod,
     )
 
-    loop = asyncio.get_event_loop()
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, daemon.stop)
-        except NotImplementedError:
-            pass
-
     try:
-        loop.run_until_complete(daemon.run())
+        asyncio.run(daemon.run())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Collector shutdown complete.")
 
