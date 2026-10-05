@@ -16,16 +16,16 @@ import numpy as np
 
 from deribit.forward_curve import build_forward_curve
 from deribit.forwards import BasisStatus
+from deribit.pricing.fees import calculate_option_combo_fee, calculate_future_fee
 from deribit.store import SnapshotStore
 
 
 def run_basis_arbitrage_scan(
     db_path: str = "snapshots.db",
     currency: str = "BTC",
-    opt_taker_bps: float = 3.0,
-    fut_taker_bps: float = 1.5,
     min_edge_bps: float = 0.0,
     max_server_skew_ms: float = 50.0,
+    max_strike_distance_pct: float = 0.20,  # <20% of spot
 ):
     store = SnapshotStore(db_path)
     snapshot_ids = [s.snapshot_id for s in store.list_snapshots(currency=currency, limit=1000)]
@@ -35,20 +35,15 @@ def run_basis_arbitrage_scan(
         print("No snapshots found in database.")
         return
 
-    # Total round-trip fee in bps:
-    # 2 option legs (each pays opt_taker_bps) + 1 future leg (pays fut_taker_bps)
-    total_fee_bps = (2.0 * opt_taker_bps) + fut_taker_bps
-
     print("=" * 80)
     print("=== DERIBIT SYNTHETIC FORWARD BASIS ARBITRAGE SCANNER ===")
-    print(f"Fee Hurdle:            {total_fee_bps:.1f} bps (2 options @ {opt_taker_bps} + 1 future @ {fut_taker_bps})")
     print(f"Target Min Net Edge:   {min_edge_bps:.1f} bps")
     print(f"Max Server Skew Filter:{max_server_skew_ms:.1f} ms")
     print("=" * 80)
 
     reversals = []
     conversions = []
-    evaluated_comparisons = 0
+    evaluated_pairs_count = 0
     skipped_high_skew = 0
 
     for snap_id in snapshot_ids:
@@ -66,53 +61,124 @@ def run_basis_arbitrage_scan(
         except Exception:
             continue
 
-        for comp in result.comparisons:
-            evaluated_comparisons += 1
-            if comp.status != BasisStatus.PRICE_CROSS.value and comp.status != BasisStatus.OK.value:
+        index_px = snap_data.get("index", {}).get("payload", {}).get("index_price", 0.0)
+        if index_px <= 0.0:
+            continue
+
+        futures_map = {comp.underlying_index: comp for comp in result.comparisons}
+
+        for eval_pair in result.evaluated_pairs:
+            pair = eval_pair.pair
+            comp = futures_map.get(pair.underlying_index)
+            if not comp or comp.future_bid is None or comp.future_ask is None:
+                continue
+
+            evaluated_pairs_count += 1
+            fwd = comp.implied_forward
+            strike = pair.strike
+
+            if abs(math.log(strike / fwd)) > max_strike_distance_pct:
                 continue
 
             # Check Reversal: Buy synthetic forward, sell future
-            if comp.future_bid and comp.best_synthetic_buy:
-                gross_edge_usd = comp.future_bid - comp.best_synthetic_buy
-                gross_bps = (gross_edge_usd / comp.future_bid) * 10_000.0
-                net_bps = gross_bps - total_fee_bps
+            call_ask_coin = pair.call.ask_coin
+            put_bid_coin = pair.put.bid_coin
 
-                # Sanity: must meet min_edge_bps and not be an absurd wing artifact (>500 bps)
-                if min_edge_bps <= net_bps < 500.0:
-                    reversals.append({
-                        "snapshot_id": snap_id,
-                        "skew_ms": meta.server_skew_ms if meta else 0.0,
-                        "underlying": comp.underlying_index,
-                        "direction": "REVERSAL (Buy Synthetic, Sell Future)",
-                        "synthetic_price": comp.best_synthetic_buy,
-                        "future_price": comp.future_bid,
-                        "gross_bps": gross_bps,
-                        "net_bps": net_bps,
-                        "locked_usd": (net_bps / 10_000.0) * comp.future_bid,
-                    })
+            if (
+                eval_pair.synthetic_buy_eligible
+                and call_ask_coin is not None
+                and put_bid_coin is not None
+                and call_ask_coin > 0.0
+                and put_bid_coin > 0.0
+            ):
+                denom = 1.0 - call_ask_coin + put_bid_coin
+                if denom > 0.0:
+                    synth_buy_fwd = strike / denom
+                    fut_bid = comp.future_bid
+
+                    gross_edge_usd = fut_bid - synth_buy_fwd
+                    call_prem_usd = call_ask_coin * index_px
+                    put_prem_usd = put_bid_coin * index_px
+
+                    opt_combo_fee_usd = calculate_option_combo_fee(
+                        buy_legs=[(call_prem_usd, 1.0)],   # Bought Call
+                        sell_legs=[(put_prem_usd, 1.0)],  # Sold Put
+                        index_price=index_px,
+                        is_taker=True,
+                    )
+
+                    fut_fee_usd = calculate_future_fee(fut_bid, contracts=1.0, is_taker=False)
+
+                    net_edge_usd = gross_edge_usd - (opt_combo_fee_usd + fut_fee_usd)
+                    net_edge_bps = (net_edge_usd / fut_bid) * 10_000.0
+
+                    if min_edge_bps <= net_edge_bps < 500.0:
+                        reversals.append({
+                            "snapshot_id": snap_id,
+                            "skew_ms": meta.server_skew_ms if meta else 0.0,
+                            "underlying": pair.underlying_index,
+                            "strike": strike,
+                            "direction": "REVERSAL",
+                            "synthetic_price": synth_buy_fwd,
+                            "future_price": fut_bid,
+                            "call_prem": call_prem_usd,
+                            "put_prem": put_prem_usd,
+                            "fees_usd": opt_combo_fee_usd + fut_fee_usd,
+                            "net_bps": net_edge_bps,
+                            "locked_usd": net_edge_usd,
+                        })
 
             # Check Conversion: Sell synthetic forward, buy future
-            if comp.future_ask and comp.best_synthetic_sell:
-                gross_edge_usd = comp.best_synthetic_sell - comp.future_ask
-                gross_bps = (gross_edge_usd / comp.future_ask) * 10_000.0
-                net_bps = gross_bps - total_fee_bps
+            call_bid_coin = pair.call.bid_coin
+            put_ask_coin = pair.put.ask_coin
 
-                if min_edge_bps <= net_bps < 500.0:
-                    conversions.append({
-                        "snapshot_id": snap_id,
-                        "skew_ms": meta.server_skew_ms if meta else 0.0,
-                        "underlying": comp.underlying_index,
-                        "direction": "CONVERSION (Sell Synthetic, Buy Future)",
-                        "synthetic_price": comp.best_synthetic_sell,
-                        "future_price": comp.future_ask,
-                        "gross_bps": gross_bps,
-                        "net_bps": net_bps,
-                        "locked_usd": (net_bps / 10_000.0) * comp.future_ask,
-                    })
+            if (
+                eval_pair.synthetic_sell_eligible
+                and call_bid_coin is not None
+                and put_ask_coin is not None
+                and call_bid_coin > 0.0
+                and put_ask_coin > 0.0
+            ):
+                denom = 1.0 - call_bid_coin + put_ask_coin
+                if denom > 0.0:
+                    synth_sell_fwd = strike / denom
+                    fut_ask = comp.future_ask
+
+                    gross_edge_usd = synth_sell_fwd - fut_ask
+                    call_prem_usd = call_bid_coin * index_px
+                    put_prem_usd = put_ask_coin * index_px
+
+                    opt_combo_fee_usd = calculate_option_combo_fee(
+                        buy_legs=[(put_prem_usd, 1.0)],    # Bought Put
+                        sell_legs=[(call_prem_usd, 1.0)],  # Sold Call
+                        index_price=index_px,
+                        is_taker=True,
+                    )
+
+                    fut_fee_usd = calculate_future_fee(fut_ask, contracts=1.0, is_taker=True)
+
+                    net_edge_usd = gross_edge_usd - (opt_combo_fee_usd + fut_fee_usd)
+                    net_edge_bps = (net_edge_usd / fut_ask) * 10_000.0
+
+                    if min_edge_bps <= net_edge_bps < 500.0:
+                        conversions.append({
+                            "snapshot_id": snap_id,
+                            "skew_ms": meta.server_skew_ms if meta else 0.0,
+                            "underlying": pair.underlying_index,
+                            "strike": strike,
+                            "direction": "CONVERSION",
+                            "synthetic_price": synth_sell_fwd,
+                            "future_price": fut_ask,
+                            "call_prem": call_prem_usd,
+                            "put_prem": put_prem_usd,
+                            "fees_usd": opt_combo_fee_usd + fut_fee_usd,
+                            "net_bps": net_edge_bps,
+                            "locked_usd": net_edge_usd,
+                        })
 
     total_opps = len(reversals) + len(conversions)
     print(f"\nEvaluated Snapshots:     {len(snapshot_ids)} (Skipped {skipped_high_skew} with server skew > {max_server_skew_ms}ms)")
-    print(f"Evaluated Expiry Pairs:  {evaluated_comparisons}")
+    print(f"Evaluated Strike Pairs:  {evaluated_pairs_count}")
     print(f"Executable Reversals:    {len(reversals)}")
     print(f"Executable Conversions:  {len(conversions)}")
 
@@ -123,28 +189,21 @@ def run_basis_arbitrage_scan(
         print(f"Max Net Basis Edge:      +{np.max(all_net):.2f} bps")
         print(f"Cumulative Locked P&L:   ${np.sum(all_usd):,.2f}")
         print("\n--- IDENTIFIED TRUE CROSSES ---")
+        print(f"{'Snapshot':<10} {'Underlying':<16} {'Strike':<10} {'Type':<12} {'Fees':<9} {'Net Edge':<12} {'Locked USD':<10}")
+        print("-" * 80)
         for opp in sorted(reversals + conversions, key=lambda x: x["net_bps"], reverse=True)[:10]:
-            print(f"  Snapshot #{opp['snapshot_id']:<3} (Skew: {opp['skew_ms']:.1f}ms) | {opp['underlying']} | {opp['direction']}")
-            print(f"    Synthetic: ${opp['synthetic_price']:,.1f} | Future: ${opp['future_price']:,.1f} | Net Edge: +{opp['net_bps']:.1f} bps (${opp['locked_usd']:,.2f})")
+            print(f"#{opp['snapshot_id']:<9} {opp['underlying']:<16} ${opp['strike']:<9,.0f} {opp['direction']:<12} ${opp['fees_usd']:<8.2f} +{opp['net_bps']:<10.1f}bps ${opp['locked_usd']:,.2f}")
     else:
-        print(f"\nNo crossings exceeded the hurdle after skew filtering. Market quotes were tight and arbitrage-free.")
+        print("\nNo crossings exceeded the exact fee hurdle within the ±20% strike window. Markets were arbitrage-free.")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", default="snapshots.db")
     parser.add_argument("--currency", default="BTC")
-    parser.add_argument("--opt-fee", type=float, default=3.0, help="Options fee in bps")
-    parser.add_argument("--fut-fee", type=float, default=1.5, help="Futures fee in bps")
-    parser.add_argument("--min-edge-bps", type=float, default=0.0, help="Min net edge hurdle")
-    parser.add_argument("--max-skew", type=float, default=50.0, help="Max exchange server skew in ms")
+    parser.add_argument("--min-edge-bps", type=float, default=0.0)
+    parser.add_argument("--max-skew", type=float, default=50.0)
+    parser.add_argument("--max-strike-pct", type=float, default=0.20)
     args = parser.parse_args()
 
-    run_basis_arbitrage_scan(
-        args.db,
-        args.currency,
-        args.opt_fee,
-        args.fut_fee,
-        args.min_edge_bps,
-        args.max_skew,
-    )
+    run_basis_arbitrage_scan(args.db, args.currency, args.min_edge_bps, args.max_skew, args.max_strike_pct)
