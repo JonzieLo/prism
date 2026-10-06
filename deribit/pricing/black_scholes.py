@@ -109,7 +109,8 @@ class BlackScholesModel(OptionModel):
             raise ValueError(f"Implied volatility solver produced invalid root: {vol_output}")
 
         eps = float(np.finfo(float).eps)
-        tolerance = max(1e-9, 100.0 * eps * price)
+        root_vega = self.greeks(spot, strike, tau, vol_output, rate, cp).vega
+        tolerance = max(1e-9, 100.0 * eps * price, root_vega * 1e-10)
 
         repriced = self.price(spot, strike, tau, vol_output, rate, cp)
         price_diff = abs(repriced - price)
@@ -219,7 +220,8 @@ class Black76Model(OptionModel):
             raise ValueError(f"Implied volatility solver produced invalid root: {vol_output}")
 
         eps = float(np.finfo(float).eps)
-        tolerance = max(1e-9, 100.0 * eps * price)
+        root_vega = self.greeks(forward,strike, tau, vol_output, rate, cp).vega
+        tolerance = max(1e-9, 100.0 * eps * price, root_vega * 1e-10)
 
         repriced = self.price(forward, strike, tau, vol_output, rate, cp)
         price_diff = abs(repriced - price)

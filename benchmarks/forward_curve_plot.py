@@ -1,5 +1,4 @@
 import argparse
-import asyncio
 import math
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,27 +7,10 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 from benchmarks.chain_report import format_accounting_report, format_expiry_comparison_table
-from deribit.config import SnapshotUniversalConfig
 from deribit.forward_curve import *
 from deribit.forwards import BasisStatus
 from deribit.segmentation import build_liquidity_segmentation, format_moneyness_table, build_moneyness_segmentation
-from deribit.store import SnapshotStore
-from deribit.ws_client import DeribitWSClient
-
-
-async def fetch_snapshot(
-    store: SnapshotStore,
-    currency: str,
-    testnet: bool,
-) -> int:
-    client = DeribitWSClient(testnet=testnet)
-    try:
-        snapshot = await client.fetch_snapshot_data(
-            SnapshotUniversalConfig(currency=currency)
-        )
-    finally:
-        await client.close()
-    return store.save_snapshot(currency, snapshot)
+from deribit.store import SnapshotStore, fetch_and_save_snapshot
 
 
 def plot_forward_curve(
@@ -352,9 +334,7 @@ if __name__ == "__main__":
     store = SnapshotStore(args.db)
 
     if args.fetch:
-        snapshot_id = asyncio.run(
-            fetch_snapshot(store, args.currency, args.testnet)
-        )
+        snapshot_id = fetch_and_save_snapshot(store, args.currency, args.testnet)
         snapshot = store.load_snapshot(snapshot_id)
     elif args.snapshot_id is not None:
         snapshot_id = args.snapshot_id

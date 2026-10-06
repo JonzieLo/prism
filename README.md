@@ -1,509 +1,126 @@
-# PRISM: Live Volatility Surface, Pricing Engine and Quoting Simulator
+# PRISM
 
-## Reproduction
+PRISM is a research pipeline for Deribit inverse crypto options. It captures
+coherent option-chain snapshots, derives expiry forwards from put-call parity,
+recovers implied volatility independently of the exchange mark IV, and fits
+butterfly-checked SVI smiles in total-variance space.
+
+The project is designed around a trading question: which part of the volatility
+surface is a position exposed to, and does an apparent surface dislocation
+remain after executable spreads and hedging costs?
+
+## What the project demonstrates
+
+- **Coherent market data:** JSON-RPC requests over one persistent WebSocket are
+  persisted as versioned snapshots.
+- **Inverse-option accounting:** coin premiums and Greeks are related to their
+  USD-valued counterparts through an explicit replication and quotient-rule
+  derivation.
+- **Independent pricing:** Black-Scholes, Black-76, Bachelier, and European CRR
+  models expose common price, Greek, and implied-volatility interfaces.
+- **Forward-curve forensics:** each expiry forward is inferred from call-put
+  parity and compared with the traded future.
+- **Quote hygiene:** missing sides, zero bids, crossed books, wide spreads, and
+  pairing failures are counted rather than silently removed.
+- **Volatility coordinates:** canonical OTM observations are expressed in
+  log-moneyness \(k=\ln(K/F)\) and total variance \(w=\sigma^2T\).
+- **SVI smile fitting:** one expiry is compressed into a raw-SVI parameter set,
+  repriced through Black-76, and checked for butterfly arbitrage.
+
+## Current checkpoints
+
+### Inverse and model Greeks
+
+![Delta and inverse exposure by strike](figs/delta_vs_strike.png)
+
+The upper panel compares pricing-model deltas. The lower panel separates
+inverse Net Transaction Delta from the raw derivative of a coin-denominated
+premium.
+
+### Options-implied forward curve
+
+![Options-implied forwards versus traded futures](figs/forward_curve.png)
+
+The chain-implied forward broadly tracks the traded futures curve. Strike-level
+synthetic intervals widen where one or both option legs are less liquid.
+
+### Raw volatility observations
+
+![Raw implied volatility in log-moneyness](figs/raw_iv_log_moneyness.png)
+
+![Raw total variance in log-moneyness](figs/raw_iv_total_variance.png)
+
+The raw views retain one canonical OTM option per strike and do not use
+Deribit's mark IV as a calibration input.
+
+### Fitted SVI smile
+
+Run `make svi_smile` to generate a two-panel checkpoint containing the fitted
+total-variance smile, market residuals, bid-ask interpretation, fitted
+parameters, and butterfly-arbitrage status.
+
+## Reproduce
 
 ```bash
 python -m pip install -e .
 
-# All unit tests
+# Offline unit suite
 make test
 
-# Capture live snapshot -> render delta,strike/forward-curve figure 
+# Capture and inspect a live snapshot
 make snapshot
 make forward_curve
 
-# Run tests and reproduce the report figures
-make all
+# Plot the latest stored raw volatility observations
+make raw_surface
+
+# Fit the most populated eligible expiry in the latest snapshot
+make svi_smile
 ```
 
-## Market Data Transport
-
-PRISM streams live order book, instrument, and index data from Deribit (BTC, ETH, SOL).
-
-### REST vs. Persistent WebSockets
-
-To price option chains accurately, market snapshots must be captured with zero internal latency skew between the index price and option quotes. Standard REST batching requires multiple independent HTTP connections, creating concurrency bottlenecks and severe exchange server-side time skew.
-
-PRISM uses **JSON-RPC 2.0 over a single persistent WebSocket stream (`wss://`)**:
-* **Multiplexed Single Pipe:** All 4 snapshot frames (`index`, `instruments`, `options`, `futures`) are pipelined down a single WebSocket connection.
-* **Request Correlation:** Unique incrementing `id` parameters correlate asynchronous frame returns back to their caller keys.
-* **Connection Persistence:** Eliminates repeated TCP/TLS handshakes, reducing post-warmup request dispatch latency to sub-millisecond windows.
-
-### Transport Performance (Testnet Benchmark)
-
-| Metric | Async HTTP REST | Persistent WebSocket (`wss://`) | Notes |
-| :--- | :--- | :--- | :--- |
-| **Warm-Up Cost** | ~250 ms / request | **~1,100–1,300 ms** | One-time TCP/TLS handshake establishing `wss://`. |
-| **RTT Window** | ~250–300 ms | **~30–300 ms** | Physical fiber RTT to Equinix LD4 (London). |
-| **Server Skew (`usOut`)** | **2,000–8,000+ ms** | **~15–30 ms** | Timestamp delta between index and options processing. |
-
-### Data Coherence & Server Skew
-
-Fetching 4 separate REST endpoints introduces **2 to 8 seconds of exchange server skew**. In fast markets, a $200 index move mid-fetch skews option mark prices and distorts the implied volatility surface. Pipelining JSON-RPC frames over a single WebSocket forces Deribit to process the snapshot sequentially in **< 30 ms**, delivering a synchronized freeze-frame of the market.
-
----
-
-## Deribit Inverse Options
-
-PRISM is primarily a learning project for Deribit's inverse BTC and ETH options. Deribit inverse options are European: they cannot be exercised early, and open in-the-money positions are handled automatically at expiry ([Deribit: Inverse Options](https://support.deribit.com/hc/en-us/articles/31424939096093-Inverse-Options)).
-
-The word describes the contract's denomination and payoff convention:
-
-* The option premium is quoted in the base coin, such as BTC or ETH.
-* Margin and settlement are also in that base coin.
-* The strike and delivery price are expressed in USD.
-* One contract represents one unit of the underlying coin.
-
-For delivery price $D$ and strike $K$, one inverse BTC call pays:
-
-$$
-H_T^{BTC}=\frac{(D-K)^+}{D}.
-$$
-
-Multiplying by $D$ exposes an ordinary USD call payoff:
-
-$$
-DH_T^{BTC}=(D-K)^+=H_T^{USD}.
-$$
-
-**A BTC-settled call is not itself a Black-Scholes USD call because it pays $\frac{(D-K)^+}{D}$ BTC rather than $(D-K)^+$ USD, so its coin value and spot Greeks also differentiate the reciprocal conversion factor $\frac{1}{D}$.**
-
-This identity gives the replication argument:
-
-1. Replicate the ordinary USD call with the standard dynamic hedge.
-2. At expiry, the hedge is worth $(D-K)^+$ USD.
-3. Convert that amount at the delivery price $D$.
-4. The resulting BTC is exactly $\frac{(D-K)^+}{D}$.
-
-The USD pricing model is therefore still useful. `inverse.py` is deliberately a denomination adapter rather than another `OptionModel`: the current index is required to convert a cash value into coin, while the existing pricing interface intentionally takes an expiry forward.
-
-If $C(X)$ is the USD option value and $c(X)=\frac{C(X)}{X}$ is its BTC value, then:
-
-$$
-\Delta_{USD}=\frac{\partial C}{\partial X},
-\qquad
-\frac{\partial c}{\partial X}
-=\frac{X\Delta_{USD}-C}{X^2}.
-$$
-
-The price-adjusted base-coin exposure is:
-
-$$
-\mathrm{NTD}
-=X\frac{\partial c}{\partial X}
-=\Delta_{USD}-c.
-$$
-
-Deribit calls this **Net Transaction Delta**: individual option tickers report standard Black-Scholes delta, while account-level `DeltaTotal` uses Black-Scholes delta minus the option mark price ([Deribit ticker Greeks](https://docs.deribit.com/api-reference/market-data/public-ticker)).
-
-This differs from a classical quanto. A quanto has a separate underlying-price process and settlement-FX process, so its price can contain an FX-volatility and correlation adjustment. An inverse option uses $\frac{1}{X}$, the reciprocal of the underlying itself; there is no independent FX factor or correlation parameter.
-
-For a parameter $(y)$ that does not move the index denominator:
-
-$$
-\frac{\partial c}{\partial y}
-=\frac{1}{X}\frac{\partial C}{\partial y}.
-$$
-
-For example:
-
-$$
-\nu_{BTC}=\frac{\nu_{USD}}{X}.
-$$
-
-Mixed spot sensitivities include the denominator term:
-
-$$
-\mathrm{Vanna}_{BTC}
-=\frac{X\,\mathrm{Vanna}_{USD}-\nu_{USD}}{X^2}.
-$$
-
-Every reported Greek therefore states its value currency, bumped variable, and held-fixed convention. A forward delta, traditional spot delta, raw coin-premium derivative, and NTD are related but are not interchangeable.
-
-### Doubling and Halving
-
-If $K$ is the initial reference level:
-
-| Delivery price | Call BTC payoff | Call USD payoff | Put BTC payoff | Put USD payoff |
-| :--- | ---: | ---: | ---: | ---: |
-| $D=\frac{K}{2}$ | $0$ | $0$ | $1$ BTC | $\frac{K}{2}$ |
-| $D=K$ | $0$ | $0$ | $0$ | $0$ |
-| $D=2K$ | $\frac{1}{2}$ BTC | $K$ | $0$ | $0$ |
-
-As $D \to \infty$, the inverse call approaches one BTC while its USD payoff remains unbounded. As $D \to 0$, the inverse put requires an unbounded number of increasingly cheap BTC while its USD payoff approaches the finite strike.
-
-
----
-
-## Pricing Engine & Model Layer
-
-PRISM uses a pluggable model interface (`OptionModel`) exposing standard `price()`, `greeks()`, and `implied_vol()` signatures.
-
-### Implemented Models
-
-* **Black-Scholes (Spot-Based):** Standard spot pricing model ($S$). Assumes continuous lognormal asset dynamics and evaluates spot-constrained derivatives ($\frac{\partial V}{\partial S}\big|_r$).
-* **Black-76 (Forward-Based):** Futures/forward pricing model ($F$). Evaluates forward-constrained derivatives ($\frac{\partial V}{\partial F}\big|_r$).
-* **Bachelier (Forward-Based Normal Model):** Assumes normally distributed changes in the expiry forward. Its volatility $\sigma_N$ is measured in price units per square-root year rather than as a percentage.
-* **Binomial (Forward Tree):** Builds a discrete Cox-Ross-Rubinstein tree for the expiry forward and prices European options by backward induction. The implementation deliberately contains no early-exercise branch.
-* **Inverse:** Converts cash value and cash Greeks into BTC/ETH value, raw coin sensitivites, and Net Transaction Delta. *Not* a separate stochastic model.
-
-### Spot vs. Forward Greeks
-While Black-Scholes and Black-76 yield identical option prices when $F = S e^{r\tau}$, their **Greeks represent different partial derivatives**:
-
-* Bumping Spot $S$ implicitly moves Forward $F$ via cost-of-carry ($F = S e^{r\tau}$).
-* Chain Rule ($\frac{\partial F}{\partial S} = e^{r\tau}$) links Spot and Forward sensitivities:
-
-$$\Delta_{\text{BS}} = \frac{\partial V}{\partial S} = \frac{\partial V}{\partial F} \cdot \frac{\partial F}{\partial S} = e^{r\tau} \quad \text{vs.} \quad \Delta_{76} = \Phi(d_1) \quad (\text{Call})$$
-
-$$\Gamma_{\text{BS}} = \frac{\partial^2 V}{\partial S^2} = e^{2r\tau} \quad \text{vs.} \quad \Gamma_{76} = \frac{\phi(d_1)}{S \sigma \sqrt{\tau}}$$
-
-$$\rho_{\text{BS}} = +K \tau e^{-r\tau} \Phi(d_2) \quad \text{vs.} \quad \rho_{76} = -\tau \cdot \text{CallPrice}_{76}$$
-
-*Note:* A Black-Scholes call is **long rates** (higher rates increase forward drift, raising call value), whereas a Black-76 call is **short rates** (higher rates increase the discount factor $e^{-r\tau}$ on a fixed forward).
-
-### Model Formulations ($q = 0$)
-| Metric / Greek | Black-Scholes (Spot $S$) | Black-76 (Forward $F$) |
-| :--- | :--- | :--- |
-| **$d_1$** | $\frac{\ln(S/K) + (r + \frac{1}{2}\sigma^2)\tau}{\sigma\sqrt{\tau}}$ | $\frac{\ln(F/K) + \frac{1}{2}\sigma^2\tau}{\sigma\sqrt{\tau}}$ |
-| **$d_2$** | $d_1 - \sigma\sqrt{\tau}$ | $d_1 - \sigma\sqrt{\tau}$ |
-| **Call Price** | $S \Phi(d_1) - K e^{-r\tau} \Phi(d_2)$ | $e^{-r\tau} [F \Phi(d_1) - K \Phi(d_2)]$ |
-| **Call Delta ($\Delta$)** | $\Phi(d_1)$ | $e^{-r\tau} \Phi(d_1)$ |
-| **Gamma ($\Gamma$)** | $\frac{\phi(d_1)}{S \sigma \sqrt{\tau}}$ | $\frac{e^{-r\tau} \phi(d_1)}{F \sigma \sqrt{\tau}}$ |
-| **Vega ($\mathcal{V}$)** | $S \phi(d_1) \sqrt{\tau}$ | $F e^{-r\tau} \phi(d_1) \sqrt{\tau}$ |
-| **Call Rho ($\rho$)** | $+K \tau e^{-r\tau} \Phi(d_2)$ | $-\tau \cdot \text{CallPrice}_{76}$ |
-
-### Bachelier Normal Model
-
-Bachelier assumes **normally distributed** forward-price changes. Its volatility $\sigma_N$ is measured in price units per square-root year. In this section, $df=e^{-r\tau}$.
-
-$$
-d=\frac{F-K}{\sigma_N\sqrt{\tau}}.
-$$
-
-The call and put prices are:
-
-$$
-C=df\left[(F-K)\Phi(d)+\sigma_N\sqrt{\tau}\phi(d)\right],
-$$
-
-$$
-P=df\left[(K-F)\Phi(-d)+\sigma_N\sqrt{\tau}\phi(d)\right].
-$$
-
-The analytic forward Greeks used by PRISM are:
-
-| Greek | Call | Put |
-| :--- | :--- | :--- |
-| **Delta** | $df\Phi(d)$ | $-df\Phi(-d)$ |
-| **Gamma** | $\frac{df\phi(d)}{\sigma_N\sqrt{\tau}}$ | Same |
-| **Vega** | $df\sqrt{\tau}\phi(d)$ | Same |
-| **Theta** | $rV-\frac{df\sigma_N\phi(d)}{2\sqrt{\tau}}$ | Same form using put value $V$ |
-| **Rho** | $-\tau V$ | $-\tau V$ |
-| **Vanna** | $-\frac{df\,d\phi(d)}{\sigma_N}$ | Same |
-| **Vomma** | $\frac{df\sqrt{\tau}\,d^2\phi(d)}{\sigma_N}$ | Same |
-
-Bachelier vega is sensitivity to a one-unit change in normal volatility, not a one-percentage-point change in lognormal volatility. This is why Deribit's lognormal mark IV cannot be passed directly into the Bachelier model.
-
-### CRR Binomial Forward Tree
-
-The binomial model does not start with a closed-form price. It divides the time to expiry into $N$ steps:
-
-$$
-\Delta t=\frac{\tau}{N},
-\qquad
-u=e^{\sigma\sqrt{\Delta t}},
-\qquad
-d=\frac{1}{u},
-\qquad
-p=\frac{1-d}{u-d}=\frac{1}{1+u}.
-$$
-
-The terminal forward nodes and USD payoffs are:
-
-$$
-F_{N,j}=F u^{N-j}d^j,
-$$
-
-$$
-V_{N,j}=\max\left(s(F_{N,j}-K),0\right),
-\qquad
-s=
-\begin{cases}
-+1 & \text{call}\\
--1 & \text{put}.
-\end{cases}
-$$
-
-European backward induction is:
-
-$$
-V_{n,j}=e^{-r\Delta t}
-\left[pV_{n+1,j}+(1-p)V_{n+1,j+1}\right].
-$$
-
-There is no early-exercise comparison. Let $V_0$ be the root, $(V_u,V_d)$ the step-1 values, and $(V_{uu},V_{ud},V_{dd})$ the step-2 values. PRISM calculates:
-
-$$
-\Delta
-=\frac{V_u-V_d}{F(u-d)},
-$$
-
-$$
-\Delta_u
-=\frac{V_{uu}-V_{ud}}{Fu(u-d)},
-\qquad
-\Delta_d
-=\frac{V_{ud}-V_{dd}}{Fd(u-d)},
-$$
-
-$$
-\Gamma
-=\frac{\Delta_u-\Delta_d}
-{\frac12F(u^2-d^2)},
-$$
-
-$$
-\Theta
-=\frac{V_{ud}-V_0}{2\Delta t},
-\qquad
-\rho=-\tau V_0.
-$$
-
-Delta, gamma, and theta are lattice estimates over finite node spacing. Vega, vanna, and vomma require additional volatility-shifted trees:
-
-$$
-\nu\approx\frac{V(\sigma+h_1)-V(\sigma-h_1)}{2h_1},
-$$
-
-$$
-\mathrm{Vanna} = \frac{\partial\Delta}{\partial\sigma}\approx\frac{\Delta(\sigma+h_1)-\Delta(\sigma-h_1)}{2h_1}
-$$
-
-$$
-\mathrm{Vomma} = \frac{\partial\nu}{\partial\sigma}\approx\frac{V(\sigma+h_2)-2V(\sigma)+V(\sigma-h_2)}{h_2^2}
-$$
-
-with:
-
-$$
-h_1=\sigma\epsilon^{1/3},
-\qquad
-h_2=\sigma\epsilon^{1/4},
-$$
-
-where $\epsilon$ is float64 machine precision. These finite-tree Greeks can oscillate as nodes move across the strike, even while the price converges toward Black-76.
-
-### Inverse Coin Conversion
-
-The inverse layer converts a cash-valued forward model rather than introducing new price dynamics. Let $V$ be the USD value, $X$ the current index, $F$ the expiry forward, and:
-
-$$
-a=\frac{F}{X}.
-$$
-
-The spot-equivalent cash Greeks are:
-
-$$
-\Delta_S=a\Delta_F,
-\qquad
-\Gamma_S=a^2\Gamma_F.
-$$
-
-The coin value and primary coin sensitivities are:
-
-$$
-c=\frac{V}{X},
-$$
-
-$$
-\Delta_{\mathrm{coin}}
-=\frac{X\Delta_S-V}{X^2},
-$$
-
-$$
-\mathrm{NTD}
-=X\Delta_{\mathrm{coin}}
-=\Delta_S-c,
-$$
-
-$$
-\Gamma_{\mathrm{coin}}
-=\frac{\Gamma_S}{X}
--\frac{2\Delta_S}{X^2}
-+\frac{2V}{X^3}.
-$$
-
-When $X$ is held fixed for a non-spot bump:
-
-$$
-\nu_{\mathrm{coin}}=\frac{\nu_F}{X},
-\qquad
-\Theta_{\mathrm{coin}}=\frac{\Theta_F}{X},
-\qquad
-\rho_{\mathrm{coin}}=\frac{\rho_F}{X},
-\qquad
-\nu_{\mathrm{coin}}=\frac{\nu_F}{X}.
-$$
-
-Because Vanna also differentiates with respect to spot:
-
-$$
-\mathrm{Vanna}_{\mathrm{coin}}
-=\frac{a\,\mathrm{Vanna}_F}{X}
--\frac{\mathrm{Vega}_F}{X^2}.
-$$
-
-
-### Delta-vs-Strike Figure
-
-Deribit defines `underlying_price` as the price used for option Implied Volatility (IV) calculations and supplies mark price and mark IV in its option summary ([Deribit book-summary API](https://docs.deribit.com/api-reference/market-data/public-get_book_summary_by_currency)). PRISM does not use the published mark IV as a model input.
-
-Calculating the delta from PRISM's derived forwards:
-$$
-F=F_\text{options}, \quad r=\frac{\ln(\frac{F}{X})}{\tau}
-$$
-
-![Call Delta by Strike](figs/delta_vs_strike.png)
-
-The upper panel shows model deltas ($\Delta$). They generally decrease from one toward zero as call strike rises. Cox-Binomial should track Black-76 with finite-step oscillation; Bachelier can differ in the wings because normal and lognormal tails differ.
-
-The lower panel shows inverse NTD. Its hump shape may be interpreted as:
-
-* **Deep ITM:** the coin call premium approaches its 1-BTC ceiling, reducing incremental coin exposure;
-* **Moderately ITM / near ATM:** NTD is highest - Both exercise probability and price sensitivity matter;
-* **Deep OTM:** Both option value and sensitivity approach zero, so NTD falls toward zero.
-
-## Implied Volatility Engine
-
-* **Black-Scholes:** Newton iterations followed by Brent on the fixed bracket $[10^{-6},5]$ if Newton does not return.
-* **Black-76:** The same Newton-then-Brent structure. Its current exception branch returns `0.0` if Brent fails; this is a known limitation and must not be interpreted as a valid zero-volatility solution.
-* **Bachelier:** A scale-aware normal-volatility bracket, an ATM-derived Newton seed, and Brent fallback after bracket expansion.
-* **CRR binomial:** Brent-only inversion on an explicitly expanded bracket; it does not run Newton first.
-
-Newton steps are evaluated in volatility units through price error divided by vega. Brent solves the price residual on a bracket and follows its own numerical stopping rules. Tests therefore check recovered volatility and, where implemented, repricing error rather than claiming one universal solver tolerance.
-### Volatility Space Stopping Rule
-
-Stopping rules evaluated in dollar space ($|P_{\text{calc}} - P_{\text{market}}| < 10^{-10}$) break down on deep OTM options where Vega is tiny ($\sim 10^{-4}$), leaving errors as large as $10^{-6}$ in volatility space. PRISM enforces convergence directly in **volatility space**:
-
-$$\left| \frac{P_{\text{calc}} - P_{\text{market}}}{\mathcal{V}} \right| < 10^{-10}$$
-
-## Forward Curve & Chain Data Cleaning
-
-Options of the same expiry should be priced relative to the same expiry forward. Using the current index in place of the forward changes moneyness and can create an artifical volatility skew. Hence, PRISM derives the forward from the same option chain before using it in Implied Volatility inversion or Greek calculations.
-
-### Index, Forward, and Premium Conversion
-
-Deribit's BTC Index $X$ is the current USD value of one BTC. An inverse option premium $c$ is quoted in BTC, so its current USD-equivalent value is:
-$$
-V_{\text{USD}}=X_C
-$$
-
-This conversion does *not* make the index the option's pricing underlying.
-PRISM uses:
-* the synchronised index $X$ to convert the current BTC premium into USD;
-* the options-implied expiry forward $F$ for moneyness and foward-model inputs;
-* a rate consistent between the two quantities:
-$$
-r = \frac{\ln(\frac{F}{X})}{\tau}
-$$
-
-Deribit's published `underlying_price` and `mark iv` are retained only for post-hoc comparison. These shoudl not be used in forward derivation or implied-volatility calucations.
-
-### Inverse Put-Call Parity
-
-Under PRISM's current unit-BTC discount factor convention, call and put premiums in BTC satisfy:
-$$
-c-p = 1-\frac{K}{F}
-$$
-Solving for the expiry forward, we get:
-$$
-F = \frac{K}{1-c+p}
-$$
-
-Therefore, every strike with both a call and a put provides an independent forward observation. 
-
-Calculating for a midpoint estimate and two execution-side estimates:
-$$
-F_\text{mid}=\frac{K}{1 - c_\text{mid} + p_\text{mid}}
-$$
-$$
-F_\text{buy}=\frac{K}{1 - c_\text{ask} + p_\text{bid}}
-$$
-$$
-F_\text{sell}=\frac{K}{1 - c_\text{bid} + p_\text{ask}}
-$$
-
-$F_\text{buy}$ represents buying the synthetic foward by buying the call and selling the put.  
-$F_\text{sell}$ represents selling the synthetic foward by selling the call and buying the put.  
-The two directions are checked *independently* because a missing/zero bid can invalidate one side without invalidating the other.
-
-### Pairing and Quote Hygiene
-
-Calls and puts are paired only when expiry, strike and `underlying_index` match, and when settlement currency and contract size agree.
-
-Each option leg is checked for:
-* missing/non-finite bids & asks,
-* zero bids/non-positive bids,
-* crossed books,
-* a bid-ask spread wider than the option midpoint
-
-Each bid-ask pair is also check for invalid midpoint, synthetic-buy/synthetic-sell parity denominators. Missing API forward and Deribit mark IV's are recorded as non-blocking comparison issues.
-
-### Expiry Forward and Bias
-
-For each expiry, PRISM uses the median of diagnostic-eligible $F_\text{mid}$ observations. PRISM reports:
-* The median options-implied forward;
-* median absolute deviation;
-* interquartile range;
-* number of eligible call-put pairs;
-* cheapest eligible synthetic buy;
-* richest eligible synthetic sell.
-
-Midpoint basis is:
-$$
-\text{Basis}_\text{USD} = F_\text{options} - F_\text{future}
-$$
-$$
-\text{Basis}_\text{bps} = \text{10,000}(\frac{F_\text{options}}{F_\text{future}}-1)
-$$
-
-A positive value means the option chain implies a higher foward than the future mark, negative value implying a lower foward.
-
-![Forward Curve](figs/forward_curve.png)
-
-The upper panel shows that the option-implied foward broadly tracks the traded futures curve. The upward-sloping curve is not by itself proof that the market expects spot to rise because futures prices also reflect funding, financing, positioning and market supply/demand.
-
-The middle panel shows that the remaining midpoint basis is generally a few basis points. These differences are not directly executable, since a midpoint is nto a price at which both legs can necessarily be traded.
-
-The lwoer panel is the individual strike-level forward estimations for one expiry. Estimates cluster arond the expiry median, while synthetic buy-sell ranges generally widen in the wings. This indicates that central strieks provide more precise forward observations than thinly quoted wing strikes.
-
-### Limitations
-The synthetic crossing diagnostic is currently price-only. It does not include:
-* matched optiona and feature quantities;
-* contract-size conversion;
-* fees and slippage;
-* margin and execution risk;
-
-A crossing is therefore a *price cross* rather than an arbitrage.  
-
-## Unit Testing & Verification
-
-Current unit testing covers automated assertions covering IV inversion, Put-Call Parity, boundary conditions, and analytical Greeks verified against central finite differences.
-
-### Relative Finite-Difference Step Scaling ($h$)
-
-Using a fixed absolute bump size (e.g., $h = 10^{-4}$) at $S = \$65,000$ falls below the float64 ULP cancellation floor for 2nd derivatives, producing negative Gamma values from machine roundoff noise. 
-
-Central difference step sizes scale relative to the variable magnitude ($x$) based on float64 machine epsilon ($\epsilon \approx 2.22 \times 10^{-16}$):
-
-* **Central first derivatives:** $h \sim x\epsilon^{1/3}$.
-* **Direct second derivatives:** $h \sim x\epsilon^{1/4}$.
-
-Vomma is validated as a central first derivative of vega in the analytic-model tests, while binomial vomma is calculated directly as a second difference of tree prices.
-
-### Test Coverage Summary
-
-* **IV round trips:** Exercises Black-Scholes, Black-76, Bachelier, and CRR over multiple strikes and volatility regimes with model-specific tolerances.
-* **Put-call parity:** Tests $C-P=S-Ke^{-r\tau}$ for Black-Scholes and $C-P=e^{-r\tau}(F-K)$ for forward models.
-* **Greek checks:** Analytic Greeks are compared with finite differences; CRR Greeks are checked against Black-76 and independent tree differences.
-* **Bounds:** Tests reject sub-intrinsic quotes across the model suite. CRR has a dedicated ceiling test. Black-Scholes and Black-76 implement ceiling guards but do not yet have dedicated above-ceiling tests. Bachelier has no finite lognormal-style ceiling.
+Use an explicit snapshot and expiry for reproducible SVI output:
+
+```bash
+python -m benchmarks.svi_smile_plot \
+  --db snapshots.db \
+  --snapshot-id 34 \
+  --expiry 1790323200000 \
+  --output figs/svi_smile.png
+```
+
+## Architecture
+
+```text
+Deribit snapshot
+    -> normalized option chain
+    -> call-put parity forwards
+    -> quote and pairing diagnostics
+    -> canonical OTM observations
+    -> own implied-volatility inversion
+    -> log-moneyness and total variance
+    -> per-expiry SVI calibration
+    -> price residuals and arbitrage assertions
+```
+
+## Knowledge base
+
+- [Market data, snapshots, forwards, and hygiene](deribit/README.md)
+- [Pricing models, inverse settlement, and Greeks](deribit/pricing/README.md)
+- [Volatility observations, SVI, and arbitrage checks](deribit/surface/README.md)
+- [Benchmark and figure commands](benchmarks/README.md)
+- [Testing and numerical verification](tests/README.md)
+
+## Current research direction
+
+The first proposed hypothesis is that liquid near-forward quotes with
+executable leave-one-out SVI residuals may mean-revert toward the fitted smile.
+The current milestone establishes the static fitted representation required to
+test that claim. Historical signal construction, delta-hedged P&L, calendar
+arbitrage, model-free 30-day variance, and DVOL comparison remain subsequent
+checkpoints.
+
+## Status
+
+The current branch implements M1 pricing, M2 forward and chain diagnostics, and
+the first M3 per-expiry SVI checkpoint. It does not yet claim a complete
+arbitrage-free multi-expiry surface or a profitable strategy.
